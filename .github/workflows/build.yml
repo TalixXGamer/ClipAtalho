@@ -84,4 +84,4 @@ jobs:
           $v = '${{ steps.ver.outputs.version }}'
           gh release view "v$v" 2>$null
           if ($LASTEXITCODE -eq 0) { Write-Host "A versão $v já foi publicada."; exit 0 }
-          gh release create "v$v" --target $env:GITHUB_SHA "out\ClipAtalho $v (portatil).zip" --title "ClipAtalho $v" --notes "Baixe o arquivo **ClipAtalho $v (portatil).zip**, extraia e abra **ClipAtalho\ClipAtalho.exe**. Também disponível na Microsoft Store."
+          gh release create "v$v" --target $env:GITHUB_SHA "out\ClipAtalho $v (portatil).zip" --title "ClipAtalho $v" --notes "Baixe o arquivo **ClipAtalho $v (portatil).zip**, extraia e abra **ClipAtalho\ClipAtalho.exe**."

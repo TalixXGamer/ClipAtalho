@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipAtalho – escreva menos e faça mais</title>
+<meta name="description" content="Gerenciador de área de transferência e expansor de texto para Windows. Cole textos e imagens com Ctrl+1 a 9 e transforme abreviações em textos prontos.">
+<link rel="icon" href="icone.png">
+<style>
+  :root { --verde: #3f9d1c; --verde-esc: #2f7a12; --fundo: #0f1411; --cartao: #182019; --texto: #e9efe9; --cinza: #9fb0a1; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--fundo); color: var(--texto); line-height: 1.55; }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 0 22px; }
+  header { text-align: center; padding: 64px 0 36px; }
+  header img { width: 96px; height: 96px; }
+  h1 { font-size: 44px; margin: 14px 0 4px; letter-spacing: -0.5px; }
+  .lema { font-size: 22px; color: var(--verde); font-weight: 600; margin: 0 0 12px; }
+  .sub { color: var(--cinza); font-size: 17px; max-width: 620px; margin: 0 auto; }
+  .botoes { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin: 30px 0 8px; }
+  .btn { display: inline-block; padding: 14px 24px; border-radius: 14px; font-weight: 600; font-size: 16px; text-decoration: none; }
+  .btn.principal { background: var(--verde); color: #fff; }
+  .btn.principal:hover { background: var(--verde-esc); }
+  .btn.sec { border: 1.5px solid #34433a; color: var(--texto); }
+  .btn.sec:hover { border-color: var(--verde); }
+  .btn.off { opacity: .55; pointer-events: none; }
+  .nota { color: var(--cinza); font-size: 13px; text-align: center; }
+  .grade { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin: 46px 0; }
+  .card { background: var(--cartao); border: 1px solid #243027; border-radius: 16px; padding: 22px; }
+  .card h3 { margin: 0 0 6px; font-size: 18px; }
+  .card p { margin: 0; color: var(--cinza); font-size: 15px; }
+  kbd { background: #0b0f0c; border: 1px solid #34433a; border-bottom-width: 2px; border-radius: 6px; padding: 1px 7px; font-family: inherit; font-size: 14px; color: var(--texto); }
+  h2 { font-size: 26px; margin: 10px 0 14px; }
+  ol { color: var(--cinza); padding-left: 22px; }
+  ol li { margin: 6px 0; }
+  footer { border-top: 1px solid #243027; margin-top: 54px; padding: 26px 0 40px; color: var(--cinza); font-size: 14px; text-align: center; }
+  footer a { color: var(--texto); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <img src="icone.png" alt="Ícone do ClipAtalho">
+    <h1>ClipAtalho</h1>
+    <p class="lema">Escreva menos e faça mais ⚡</p>
+    <p class="sub">Guarde os textos que você mais usa e cole qualquer um deles com um atalho, sem abrir nada. Para Windows 10 e 11.</p>
+    <div class="botoes">
+      <!-- Quando o app for aprovado na loja, trocar por: href="https://apps.microsoft.com/detail/9NQRGWZT19NN" e tirar a classe "off" -->
+      <a class="btn principal off" href="#">Microsoft Store (em breve)</a>
+      <a class="btn sec" href="https://github.com/TalixXGamer/ClipAtalho/releases/latest">Baixar versão portátil</a>
+    </div>
+    <p class="nota">Grátis · Portátil: não precisa instalar, é só extrair o .zip e abrir o ClipAtalho.exe</p>
+  </header>
+
+  <div class="grade">
+    <div class="card"><h3><kbd>Ctrl</kbd> + <kbd>1</kbd> … <kbd>9</kbd></h3><p>Cada número cola na hora um texto (ou imagem) que você escolheu: saudação, assinatura, endereço, resposta pronta.</p></div>
+    <div class="card"><h3><kbd>Ctrl</kbd> + <kbd>0</kbd></h3><p>Abre a lista com tudo o que você copiou. Esqueceu qual número é qual? É só olhar e clicar.</p></div>
+    <div class="card"><h3>Atalhos por expansão</h3><p>Digite uma abreviação como <b>bd1</b>, aperte <kbd>Tab</kbd> e ela vira “Bom dia! Tudo bem?”. Você cria os seus.</p></div>
+    <div class="card"><h3>Imagens e prints</h3><p>Prints e imagens copiadas também entram na lista, com miniatura, e colam com os mesmos atalhos.</p></div>
+    <div class="card"><h3>Do seu jeito</h3><p>Fixe os favoritos, reordene arrastando, desfaça com <kbd>Ctrl</kbd>+<kbd>Z</kbd>, tema claro ou escuro e várias cores.</p></div>
+    <div class="card"><h3>Seus dados, no seu PC</h3><p>Nada é enviado pela internet. Backup em texto e pasta compartilhada entre computadores, se quiser.</p></div>
+  </div>
+
+  <h2>Teste em menos de 10 segundos</h2>
+  <ol>
+    <li>Baixe e abra o ClipAtalho (ele fica no canto da barra de tarefas, perto do relógio).</li>
+    <li>Abra o Bloco de Notas.</li>
+    <li>Aperte <kbd>Ctrl</kbd> + <kbd>3</kbd>: aparece o manual rápido. A lista já vem com exemplos; depois é só montar a sua.</li>
+  </ol>
+
+  <footer>
+    Desenvolvido por <b>TalixXGamer</b> ·
+    <a href="https://www.instagram.com/talespsg">Instagram</a> ·
+    <a href="privacidade/">Política de Privacidade</a> ·
+    <a href="https://github.com/TalixXGamer/ClipAtalho">Código no GitHub</a>
+  </footer>
+</div>
+</body>
+</html>

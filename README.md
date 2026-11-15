@@ -11,9 +11,10 @@
 - **Atalhos por expansão:** digite uma abreviação (ex.: `bd1`), aperte **Tab** e ela vira o texto completo (“Bom dia! Tudo bem?”).
 - Guarda também **imagens e prints** copiados.
 - Fixar, reordenar, desfazer (Ctrl+Z), backup em texto, pasta de dados compartilhada entre computadores, tema claro/escuro e cores.
-- Tudo fica no seu computador. Veja a [Política de Privacidade](https://talixxgamer.github.io/ClipAtalho/).
+- Tudo fica no seu computador. Veja a [Política de Privacidade](https://talixxgamer.github.io/ClipAtalho/privacidade/).
 
 ## Como baixar
+- **Site:** [talixxgamer.github.io/ClipAtalho](https://talixxgamer.github.io/ClipAtalho/)
 - **Microsoft Store:** em breve.
 - **Versão portátil (sem instalar):** na página [Releases](https://github.com/TalixXGamer/ClipAtalho/releases), baixe o arquivo `.zip` portátil da versão mais recente, extraia e abra `ClipAtalho\ClipAtalho.exe`.
 - **Onde não é possível baixar .exe:** baixe `ClipAtalho.cs` e `Compilar ClipAtalho.bat`, coloque os dois na mesma pasta e dê dois cliques no `.bat`. Ele usa o compilador que já vem no Windows e cria a pasta `ClipAtalho` com o programa.

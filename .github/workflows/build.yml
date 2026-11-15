@@ -52,7 +52,7 @@ jobs:
         run: |
           $v = '${{ steps.ver.outputs.version }}'
           if (-not $env:IDENTITY_NAME) { $env:IDENTITY_NAME = 'TalixXGamer.ClipAtalho' }
-          if (-not $env:PUBLISHER) { $env:PUBLISHER = 'CN=TalixXGamer' }
+          if (-not $env:PUBLISHER) { $env:PUBLISHER = 'CN=A929DD09-A599-46AC-A177-308865A2E114' }
           if (-not $env:PUBLISHER_DISPLAY) { $env:PUBLISHER_DISPLAY = 'TalixXGamer' }
           $pkg = 'out\msix'
           New-Item -ItemType Directory -Force $pkg | Out-Null

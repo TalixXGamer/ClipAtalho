@@ -1,5 +1,6 @@
 ---
-title: ClipAtalho – Política de Privacidade
+title: Política de Privacidade
+permalink: /privacidade/
 ---
 
 # ClipAtalho – Política de Privacidade

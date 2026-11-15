@@ -1,0 +1,6 @@
+out/
+*.exe
+*.log
+ClipAtalho.ini
+ClipAtalho.local.ini
+ClipAtalho imagens/

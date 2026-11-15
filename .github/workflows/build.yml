@@ -1,0 +1,85 @@
+# Compila o ClipAtalho num Windows da nuvem e gera:
+#  - "ClipAtalho X.Y.Z (portatil).zip"  (pasta ClipAtalho com o ClipAtalho.exe)
+#  - "ClipAtalho X.Y.Z.msix"            (pacote para enviar à Microsoft Store)
+# Roda ao publicar uma tag (ex.: v1.0.0) ou manualmente em Actions › Compilar › Run workflow.
+name: Compilar
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ler a versão do código
+        id: ver
+        shell: pwsh
+        run: |
+          $m = Select-String -Path ClipAtalho.cs -Pattern 'const string VERSION = "([0-9]+\.[0-9]+\.[0-9]+)' | Select-Object -First 1
+          if (-not $m) { throw 'VERSION não encontrada em ClipAtalho.cs' }
+          $v = $m.Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Versão: $v"
+
+      - name: Compilar com o csc do .NET Framework 4
+        shell: pwsh
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          New-Item -ItemType Directory -Force out\ClipAtalho | Out-Null
+          & $csc /nologo /codepage:65001 /target:winexe /optimize+ /win32icon:assets\ClipAtalho.ico /out:out\ClipAtalho\ClipAtalho.exe ClipAtalho.cs
+          if ($LASTEXITCODE -ne 0) { throw 'Falha na compilação' }
+
+      - name: Montar o .zip portátil
+        shell: pwsh
+        run: |
+          $v = '${{ steps.ver.outputs.version }}'
+          Compress-Archive -Path out\ClipAtalho -DestinationPath "out\ClipAtalho $v (portatil).zip"
+
+      - name: Montar o pacote MSIX
+        shell: pwsh
+        env:
+          IDENTITY_NAME: ${{ vars.STORE_IDENTITY_NAME }}
+          PUBLISHER: ${{ vars.STORE_PUBLISHER }}
+          PUBLISHER_DISPLAY: ${{ vars.STORE_PUBLISHER_DISPLAY }}
+        run: |
+          $v = '${{ steps.ver.outputs.version }}'
+          if (-not $env:IDENTITY_NAME) { $env:IDENTITY_NAME = 'TalixXGamer.ClipAtalho' }
+          if (-not $env:PUBLISHER) { $env:PUBLISHER = 'CN=TalixXGamer' }
+          if (-not $env:PUBLISHER_DISPLAY) { $env:PUBLISHER_DISPLAY = 'TalixXGamer' }
+          $pkg = 'out\msix'
+          New-Item -ItemType Directory -Force $pkg | Out-Null
+          Copy-Item out\ClipAtalho\ClipAtalho.exe $pkg
+          Copy-Item -Recurse packaging\Images $pkg
+          (Get-Content packaging\AppxManifest.xml -Raw -Encoding UTF8).
+            Replace('__IDENTITY_NAME__', $env:IDENTITY_NAME).
+            Replace('__PUBLISHER__', $env:PUBLISHER).
+            Replace('__PUBLISHER_DISPLAY__', $env:PUBLISHER_DISPLAY).
+            Replace('__VERSION__', "$v.0") | Set-Content "$pkg\AppxManifest.xml" -Encoding UTF8
+          $makeappx = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\makeappx.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $makeappx) { throw 'makeappx.exe não encontrado' }
+          & $makeappx.FullName pack /o /d $pkg /p "out\ClipAtalho $v.msix"
+          if ($LASTEXITCODE -ne 0) { throw 'Falha ao gerar o MSIX' }
+
+      - name: Guardar os arquivos gerados
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClipAtalho-${{ steps.ver.outputs.version }}
+          path: |
+            out/*.zip
+            out/*.msix
+
+      - name: Publicar na página de versões (Releases)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = '${{ steps.ver.outputs.version }}'
+          gh release create $env:GITHUB_REF_NAME "out\ClipAtalho $v (portatil).zip" --title "ClipAtalho $v" --notes "Baixe o arquivo **ClipAtalho $v (portatil).zip**, extraia e abra **ClipAtalho\ClipAtalho.exe**. Também disponível na Microsoft Store."

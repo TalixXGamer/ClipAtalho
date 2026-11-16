@@ -358,6 +358,8 @@ static class ClipAtalho
         public IntPtr Thumb;          // miniatura leve, gerada uma vez (listas)
         public DateTime Added = DateTime.Now; // quando entrou na lista (autoexclusão)
         public bool Copied;                   // entrou por Ctrl+C (não por edição)
+        public byte[] Html, Rtf;              // formatação original (negrito, cores, links), quando houver
+        public bool HasFormat { get { return Html != null || Rtf != null; } }
         public int W, H;
         public string Hash, ImgFile;  // Hash != null => clip de imagem
         public bool IsImage { get { return Hash != null; } }
@@ -422,7 +424,7 @@ static class ClipAtalho
     {
         try
         {
-            if (nCode == 0 && popMode != MODE_NONE)
+            if (nCode == 0 && popMode != MODE_NONE && hMenuWnd == IntPtr.Zero)
             {
                 uint m = (uint)wParam.ToInt64();
                 if (m == 0x0201 || m == 0x0204 || m == 0x0207 || m == 0x020B) // botão esquerdo, direito, meio, laterais
@@ -501,7 +503,7 @@ autoexclusao=nunca
         "📘 MANUAL RÁPIDO DO CLIPATALHO\n\n" +
         "COLAR COM ATALHO\n" +
         "• Ctrl+1 a Ctrl+9: cola o texto da posição 1 a 9 (vale também no teclado numérico).\n" +
-        "• Ctrl+0: abre a lista com todos os textos. Clique para colar ou aperte 1 a 9. A lixeira apaga um item e “Limpar” (dois cliques) apaga os não fixados. Fecha com Esc ou com um clique fora.\n\n" +
+        "• Ctrl+0: abre a lista com todos os textos, perto de onde você está escrevendo. Clique para colar ou aperte 1 a 9. Botão direito: colar sem formatação, fixar, mudar de posição ou excluir. Arraste um item para mudar a posição. Fecha com Esc ou com um clique fora.\n\n" +
         "COMO OS TEXTOS ENTRAM NA LISTA\n" +
         "• Tudo que você copia (Ctrl+C) entra sozinho na lista, inclusive imagens e prints.\n" +
         "• Para criar à mão: clique no ícone do ClipAtalho perto do relógio › “+ Novo” › digite › “Salvar”.\n\n" +
@@ -573,6 +575,7 @@ autoexclusao=nunca
     // Grava (ou cria) uma chave do .ini preservando o restante do arquivo.
     static void SetIniValue(string section, string key, string value)
     {
+        if (section == "geral" && !cfgUndoing && key != "lista_pos") PushCfgUndo();
         try
         {
             string text = ReadIni() ?? DefaultIni;
@@ -981,11 +984,20 @@ autoexclusao=nunca
     static void AddCopiedClip(Clip cand)
     {
         cand.Copied = true;
-        foreach (Clip c in clips) if (c.Pinned && Same(c, cand)) { DropImage(cand); return; }
+        foreach (Clip c in clips) if (c.Pinned && Same(c, cand))
+        {
+            if (!c.HasFormat && cand.HasFormat) { c.Html = cand.Html; c.Rtf = cand.Rtf; SaveClips(); }
+            DropImage(cand);
+            return;
+        }
         Clip front = null;
         foreach (Clip c in clips) if (!c.Pinned && Same(c, cand)) { front = c; break; }
         if (front == null) front = cand;
-        else DropImage(cand);
+        else
+        {
+            if (cand.HasFormat) { front.Html = cand.Html; front.Rtf = cand.Rtf; } // fica com a formatação mais recente
+            DropImage(cand);
+        }
         List<Clip> un = new List<Clip>();
         un.Add(front);
         int pinned = 0;
@@ -1439,6 +1451,8 @@ autoexclusao=nunca
                 }
                 if (c.Text.Length == 0) continue;
                 sb.Append(c.Pinned ? "fixo=" : "normal=").Append(EscClip(c.Text)).Append("\r\n");
+                if (c.Html != null) sb.Append("html=").Append(Convert.ToBase64String(c.Html)).Append("\r\n"); // formatação do clip acima
+                if (c.Rtf != null) sb.Append("rtf=").Append(Convert.ToBase64String(c.Rtf)).Append("\r\n");
             }
             WriteIni(sb.ToString());
             CleanImageFolder(used);
@@ -1471,6 +1485,16 @@ autoexclusao=nunca
                 {
                     Clip ic = LoadImageClip(line.Substring(eq + 1), key == "fixo_img");
                     if (ic != null) clips.Add(ic);
+                    continue;
+                }
+                if ((key == "html" || key == "rtf") && clips.Count > 0 && !clips[clips.Count - 1].IsImage) // formatação do clip anterior
+                {
+                    try
+                    {
+                        byte[] b = Convert.FromBase64String(line.Substring(eq + 1).Trim());
+                        if (key == "html") clips[clips.Count - 1].Html = b; else clips[clips.Count - 1].Rtf = b;
+                    }
+                    catch { }
                     continue;
                 }
                 if (key != "fixo" && key != "normal") continue;
@@ -1535,6 +1559,80 @@ autoexclusao=nunca
     }
 
     // Grava o texto marcando-o para não entrar no histórico do Windows (Win+V).
+    static uint fmtHtml, fmtRtf;
+    const int MAX_FORMAT_BYTES = 1024 * 1024; // formatação maior que 1 MB não é guardada (só o texto)
+
+    // Copia os bytes de um formato da área de transferência (abre e fecha rapidinho).
+    static byte[] GetClipboardBytes(uint fmt)
+    {
+        if (fmt == 0 || !IsClipboardFormatAvailable(fmt) || !OpenClip()) return null;
+        try
+        {
+            IntPtr h = GetClipboardData(fmt);
+            if (h == IntPtr.Zero) return null;
+            ulong size = GlobalSize(h).ToUInt64();
+            if (size == 0 || size > (ulong)MAX_FORMAT_BYTES) return null;
+            IntPtr p = GlobalLock(h);
+            if (p == IntPtr.Zero) return null;
+            try
+            {
+                byte[] b = new byte[(int)size];
+                Marshal.Copy(p, b, 0, b.Length);
+                return b;
+            }
+            finally { GlobalUnlock(h); }
+        }
+        catch { return null; }
+        finally { CloseClipboard(); }
+    }
+
+    static IntPtr BytesToGlobal(byte[] b)
+    {
+        IntPtr h = GlobalAlloc(2, new UIntPtr((ulong)b.Length + 1));
+        if (h == IntPtr.Zero) return IntPtr.Zero;
+        IntPtr p = GlobalLock(h);
+        if (p == IntPtr.Zero) { GlobalFree(h); return IntPtr.Zero; }
+        Marshal.Copy(b, 0, p, b.Length);
+        Marshal.WriteByte(p, b.Length, 0);
+        GlobalUnlock(h);
+        return h;
+    }
+
+    // Texto + formatação original: cada programa usa o formato mais rico que entende.
+    static bool SetClipboardRich(Clip c)
+    {
+        char[] chars = (c.Text.Replace("\0", "") + "\0").ToCharArray();
+        IntPtr h = GlobalAlloc(2, new UIntPtr((uint)(chars.Length * 2)));
+        if (h == IntPtr.Zero) return false;
+        IntPtr p = GlobalLock(h);
+        if (p == IntPtr.Zero) { GlobalFree(h); return false; }
+        Marshal.Copy(chars, 0, p, chars.Length);
+        GlobalUnlock(h);
+        IntPtr hh = c.Html != null && fmtHtml != 0 ? BytesToGlobal(c.Html) : IntPtr.Zero;
+        IntPtr hr = c.Rtf != null && fmtRtf != 0 ? BytesToGlobal(c.Rtf) : IntPtr.Zero;
+        if (!OpenClip())
+        {
+            GlobalFree(h);
+            if (hh != IntPtr.Zero) GlobalFree(hh);
+            if (hr != IntPtr.Zero) GlobalFree(hr);
+            return false;
+        }
+        try
+        {
+            EmptyClipboard();
+            if (SetClipboardData(CF_UNICODETEXT, h) == IntPtr.Zero) GlobalFree(h);
+            if (hh != IntPtr.Zero && SetClipboardData(fmtHtml, hh) == IntPtr.Zero) GlobalFree(hh);
+            if (hr != IntPtr.Zero && SetClipboardData(fmtRtf, hr) == IntPtr.Zero) GlobalFree(hr);
+            if (fmtExclude != 0)
+            {
+                IntPtr h2 = GlobalAlloc(2, new UIntPtr(4));
+                if (h2 != IntPtr.Zero && SetClipboardData(fmtExclude, h2) == IntPtr.Zero) GlobalFree(h2);
+            }
+            return true;
+        }
+        finally { CloseClipboard(); }
+    }
+
     static bool SetClipboardText(string s)
     {
         char[] chars = (s.Replace("\0", "") + "\0").ToCharArray();
@@ -1574,7 +1672,13 @@ autoexclusao=nunca
         string t = GetClipboardText();
         bool hasImg = cfgImages && (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_BITMAP) || HasImageFiles());
         bool onlyLink = t != null && LooksLikeLink(t); // ex.: navegador que copia a imagem junto com o endereço dela
-        if (t != null && t.Trim().Length > 0 && !(hasImg && onlyLink)) AddCopied(t); // havendo texto, ele tem preferência (ex.: células do Excel)
+        if (t != null && t.Trim().Length > 0 && !(hasImg && onlyLink)) // havendo texto, ele tem preferência (ex.: células do Excel)
+        {
+            Clip tc = new Clip(t, false);
+            tc.Html = GetClipboardBytes(fmtHtml); // formatação original (Word, navegadores, e-mails...)
+            tc.Rtf = GetClipboardBytes(fmtRtf);
+            AddCopiedClip(tc);
+        }
         else if (hasImg)
         {
             List<Clip> imgs = CaptureClipboardImages();
@@ -1590,9 +1694,12 @@ autoexclusao=nunca
     }
 
     // ------------------------------------------------------------------ colagem
-    static Clip pendImg;
+    static Clip pendImg, pendRich;
 
-    static void PasteClip(Clip c)
+    static void PasteClip(Clip c) { PasteClip(c, false); }
+
+    // plain = "Colar sem formatação": só o texto, sem negrito, cores ou links.
+    static void PasteClip(Clip c, bool plain)
     {
         if (c == null) return;
         if (c.IsImage)
@@ -1601,12 +1708,17 @@ autoexclusao=nunca
             StartPaste("", 0);
             pendImg = c;
         }
-        else if (c.Text.Length > 0) StartPaste(c.Text, 0);
+        else if (c.Text.Length > 0)
+        {
+            StartPaste(c.Text, 0);
+            if (!plain && c.HasFormat) pendRich = c;
+        }
     }
 
     static void StartPaste(string text, int backspaces)
     {
         pendImg = null;
+        pendRich = null;
         pendText = text;
         pendBS = backspaces;
         pendDeadline = DateTime.UtcNow.AddSeconds(3);
@@ -1641,7 +1753,7 @@ autoexclusao=nunca
     {
         if (!restoring) savedClip = GetClipboardText();
         string what = pendImg != null ? "imagem " + pendImg.W + "x" + pendImg.H : pendText.Length + " caracteres";
-        if (!(pendImg != null ? SetClipboardImage(pendImg) : SetClipboardText(pendText)))
+        if (!(pendImg != null ? SetClipboardImage(pendImg) : pendRich != null ? SetClipboardRich(pendRich) : SetClipboardText(pendText)))
         {
             Log("Colar: FALHA ao gravar na área de transferência (" + what + ")");
             return;
@@ -1940,7 +2052,8 @@ autoexclusao=nunca
 
     // ------------------------------------------------------------------ janela de sugestão / lista
     static List<Clip> popClips = new List<Clip>(); // clip de cada linha da lista rápida
-    static bool popNumbered, popDrag, popHoverTrash, popClearArmed;
+    static bool popNumbered, popDrag, popHoverTrash, popClearArmed, popHoverStar, popItemDrag;
+    static int popPress = -1, popPressY, popDropLine = -1;
     static Clip popTrashArmed;
     static POINT popDragStart;
     static RECT popDragRect;
@@ -1964,7 +2077,7 @@ autoexclusao=nunca
         }
         else
         {
-            popLines.Add("Clique para colar  ·  1–9 cola  ·  arraste aqui para mover");
+            popLines.Add("Clique cola  ·  botão direito: mais opções  ·  arraste os itens");
             for (int i = 0; i < clips.Count; i++) // todos os clips, fixados ou não
             {
                 Clip c = clips[i];
@@ -2115,11 +2228,11 @@ autoexclusao=nunca
         IDC_XUP = 146, IDC_XDOWN = 147, IDC_XPIN = 148, IDC_XCLEAR = 149, IDC_THEME = 150, IDC_COLOR = 152, IDC_DELPIN = 160, IDC_T_IMAGES = 161, IDC_XSAVENEW = 162, IDC_XSORT = 163, IDC_CLOSE = 164,
         IDC_SEG = 180, IDC_BK_CLIPS = 182, IDC_BK_X = 183, IDC_BK_ALL = 184, IDC_RESTOREBK = 185, IDC_AUTODEL = 186,
         IDC_T_DATADIR = 187, IDC_DATADIR = 188, IDC_CONFLICT = 189, IDC_FACTORY = 190, IDC_FEEDBACK = 191,
-        IDC_UNDO = 192, IDC_REDO = 193, IDC_XUNDO = 194, IDC_XREDO = 195,
+        IDC_UNDO = 192, IDC_REDO = 193, IDC_XUNDO = 194, IDC_XREDO = 195, IDC_CUNDO = 196, IDC_CREDO = 197,
         IDC_FB_SUG = 210, IDC_FB_REC = 211, IDC_FB_MAIL = 212, IDC_FB_MSG = 213;
     const string RUNKEY = @"Software\Microsoft\Windows\CurrentVersion\Run";
     const string INSTAGRAM = "https://www.instagram.com/talespsg";
-    const string VERSION = "1.0.0 15-11-2026";
+    const string VERSION = "1.1.0 16-11-2026";
     static readonly string[] PageTitles = { "Seus clips", "Atalhos por Expansão", "Configurações", "Ajuda", "Configurações" };
     static readonly string[] ModNames = { "Ctrl", "Shift", "Alt", "Win" };
     static readonly uint[] ModBits = { 2, 4, 1, 8 };
@@ -2229,6 +2342,8 @@ autoexclusao=nunca
         Btn(214, 416, 210, 34, IDC_OPENDIR, 2);
         Btn(556, 46, 120, 28, IDC_SEG, 24);      // Configurações: "Geral" | "Dados e backup"
         Btn(682, 46, 122, 28, IDC_SEG + 1, 24);
+        Btn(488, 46, 28, 28, IDC_CUNDO, 24);     // desfazer / refazer das configurações
+        Btn(520, 46, 28, 28, IDC_CREDO, 24);
 
         // página 4: dados e backup (sub-página de Configurações)
         Btn(36, 132, 176, 32, IDC_BK_CLIPS, 4);
@@ -2566,7 +2681,7 @@ autoexclusao=nunca
             "COLAR COM ATALHO\n" +
             "•  " + m + "+1 até " + m + "+9: cola o clip da posição 1 a 9.\n" +
             "•  Vale nos números de cima do teclado e no teclado numérico (com Num Lock ligado).\n" +
-            "•  " + m + "+0: mostra a lista rápida com todos os clips (fixados e recentes). Clique em um item para colar, ou aperte 1 a 9. A lixeira que aparece no item sob o mouse o apaga (num clip fixado, clique duas vezes para confirmar), e \"Limpar\" (clicado duas vezes) apaga todos os não fixados. Fecha com Esc, com o X ou com um clique fora dela. A tecla Print Screen (e o Win+Shift+S) não a fecha, para você poder capturá-la. Para mudar a lista de lugar, arraste a faixa de cima: ela volta a abrir onde você deixou.\n\n" +
+            "•  " + m + "+0: mostra a lista rápida com todos os clips (fixados e recentes). Clique em um item para colar, ou aperte 1 a 9. A lixeira que aparece no item sob o mouse o apaga (num clip fixado, clique duas vezes para confirmar), a estrela fixa ou solta, arrastar um item muda a posição dele e o botão direito traz Colar sem formatação, Subir, Descer, Mover para o topo/fim e Excluir. \"Limpar\" (clicado duas vezes) apaga todos os não fixados. A lista abre logo abaixo (ou acima) da linha onde você está escrevendo, sem cobri-la. Fecha com Esc, com o X ou com um clique fora dela. A tecla Print Screen (e o Win+Shift+S) não a fecha, para você poder capturá-la. Para mudar a lista de lugar, arraste a faixa de cima: ela volta a abrir onde você deixou.\n\n" +
             "COMO OS CLIPS ENTRAM NA LISTA\n" +
             "•  Tudo que você copiar (Ctrl+C) entra sozinho na primeira posição livre, como \"Recente\".\n" +
             "•  Com \"Clips de imagem\" ligado em Configurações, imagens copiadas de qualquer forma também entram: Print Screen, Win+Shift+S, \"Copiar imagem\" no navegador ou em outros programas e arquivos de imagem copiados no Explorador. Aparecem com miniatura, colam com os mesmos atalhos e não são editáveis.\n" +
@@ -2581,7 +2696,8 @@ autoexclusao=nunca
             "•  \"Limpar não fixados\": apaga de uma vez todos os clips temporários.\n" +
             "•  \"Apagar Fixados\" (botão vermelho): apaga todos os clips fixados, depois de confirmar.\n" +
             "•  \"Salvar\" num clip que já existe pergunta: gravar a alteração nele ou salvar como um clip novo (o original fica como estava).\n" +
-            "•  Desfazer / refazer: botões ↶ ↷ no canto do cartão, ou Ctrl+Z / Ctrl+Y (fora do campo de texto em edição). Vale para editar, mover, fixar, excluir, limpar e restaurar.\n\n" +
+            "•  Desfazer / refazer: botões ↶ ↷ no canto do cartão, ou Ctrl+Z / Ctrl+Y. Vale para editar, mover, fixar, excluir, limpar, restaurar e também para as ações feitas na lista rápida (Ctrl+0). Dentro do texto em edição, o Ctrl+Z desfaz a digitação palavra por palavra, quantas vezes quiser.\n" +
+            "•  Formatação: ao copiar um texto com negrito, cores ou links (Word, navegador, e-mail), o clip guarda a formatação e cola formatado. Para colar só o texto, use o botão direito › \"Colar sem formatação\" na lista rápida. Editar um clip formatado o transforma em texto sem formatação.\n\n" +
             "ATALHOS POR EXPANSÃO (textos prontos chamados por uma abreviação)\n" +
             "•  Cadastre na tela \"Atalhos por Expansão\": um atalho curto (ex.: bn1) e o texto correspondente (ex.: Boa noite. Tudo bem?).\n" +
             "•  Em qualquer programa, digite o atalho: aparece uma sugestão com o texto. Aperte Tab para inserir — o atalho digitado é apagado e o texto entra no lugar.\n" +
@@ -2599,7 +2715,8 @@ autoexclusao=nunca
             "•  Guardar também os clips não fixados.\n" +
             "•  Ligar ou desligar a expansão de texto.\n" +
             "•  Clips de imagem (ligado por padrão).\n" +
-            "•  Aparência: tema claro ou escuro e a cor da janela.\n\n" +
+            "•  Aparência: tema claro ou escuro e a cor da janela.\n" +
+            "•  Errou num ajuste? Ctrl+Z (ou os botões ↶ ↷ no alto) desfaz também as mudanças nas configurações.\n\n" +
             "DADOS E BACKUP (Configurações › Dados e backup)\n" +
             "•  Backup: gera listas em texto (.txt), uma de clips e outra de expansões. O \"Backup completo\" gera as duas e também um arquivo de configurações (.ini: teclas, tema, cor e opções). Entre um item e outro ficam duas linhas em branco. Nos clips, a 1ª linha é o número (★ = fixado); nas expansões, a 1ª linha é o atalho (com - na frente = não fixado) e depois vem o texto. Imagens vão numa pasta \"... - imagens\" ao lado.\n" +
             "•  Restaurar backup: escolha um ou mais arquivos (pode marcar os 3 do backup completo juntos). Nas listas, dá para substituir a atual ou adicionar os itens a ela; as configurações são aplicadas depois de confirmar.\n" +
@@ -2837,7 +2954,15 @@ autoexclusao=nunca
     static void SaveEdit()
     {
         if (editClip != null && editClip.IsImage) { SetDirty(false); return; } // imagem não é editável
+        if (editClip != null && editClip.HasFormat && EditText() != editClip.Text)
+        {
+            dlgEscResult = 2;
+            dlgPrimary = 1;
+            if (AskDialog("Clip com formatação", "Este clip tem formatação (negrito, cores, links...).\nAo salvar a edição, ele passa a ser colado como texto sem formatação.",
+                "Salvar sem formatação", "Cancelar", null) != 1) return;
+        }
         PushClipUndo();
+        if (editClip != null && EditText() != editClip.Text) { editClip.Html = null; editClip.Rtf = null; }
         string text = EditText();
         if (editClip == null)
         {
@@ -2885,7 +3010,14 @@ autoexclusao=nunca
     }
 
     // ------------------------------------------------------------------ desfazer / refazer
-    class ClipSnap { public List<Clip> Refs = new List<Clip>(); public List<string> Texts = new List<string>(); public List<bool> Pins = new List<bool>(); public DateTime Time = DateTime.Now; }
+    class ClipSnap
+    {
+        public List<Clip> Refs = new List<Clip>();
+        public List<string> Texts = new List<string>();
+        public List<bool> Pins = new List<bool>();
+        public List<byte[]> Htmls = new List<byte[]>(), Rtfs = new List<byte[]>();
+        public DateTime Time = DateTime.Now;
+    }
     class XSnap
     {
         public List<string> Order, Loose, Est;
@@ -2900,7 +3032,7 @@ autoexclusao=nunca
     static ClipSnap TakeClipSnap()
     {
         ClipSnap s = new ClipSnap();
-        foreach (Clip c in clips) { s.Refs.Add(c); s.Texts.Add(c.Text); s.Pins.Add(c.Pinned); }
+        foreach (Clip c in clips) { s.Refs.Add(c); s.Texts.Add(c.Text); s.Pins.Add(c.Pinned); s.Htmls.Add(c.Html); s.Rtfs.Add(c.Rtf); }
         return s;
     }
 
@@ -2908,14 +3040,14 @@ autoexclusao=nunca
     {
         if (a.Refs.Count != b.Refs.Count) return false;
         for (int i = 0; i < a.Refs.Count; i++)
-            if (a.Refs[i] != b.Refs[i] || a.Texts[i] != b.Texts[i] || a.Pins[i] != b.Pins[i]) return false;
+            if (a.Refs[i] != b.Refs[i] || a.Texts[i] != b.Texts[i] || a.Pins[i] != b.Pins[i] || a.Htmls[i] != b.Htmls[i] || a.Rtfs[i] != b.Rtfs[i]) return false;
         return true;
     }
 
     static void InvalidateUndoButtons()
     {
         if (hwndMgr == IntPtr.Zero) return;
-        foreach (int i in new int[] { IDC_UNDO, IDC_REDO, IDC_XUNDO, IDC_XREDO }) InvalidateRect(GetDlgItem(hwndMgr, i), IntPtr.Zero, false);
+        foreach (int i in new int[] { IDC_UNDO, IDC_REDO, IDC_XUNDO, IDC_XREDO, IDC_CUNDO, IDC_CREDO }) InvalidateRect(GetDlgItem(hwndMgr, i), IntPtr.Zero, false);
     }
 
     static void PushClipUndo()
@@ -2944,6 +3076,8 @@ autoexclusao=nunca
             Clip c = s.Refs[i];
             c.Text = s.Texts[i];
             c.Pinned = s.Pins[i];
+            c.Html = s.Htmls[i];
+            c.Rtf = s.Rtfs[i];
             res.Add(c);
         }
         List<Clip> later = clips.FindAll(delegate(Clip c) { return c.Copied && !c.Pinned && !s.Refs.Contains(c) && c.Added >= s.Time; });
@@ -2995,9 +3129,114 @@ autoexclusao=nunca
         RefreshX(true);
     }
 
-    // which: 0 = clips, 1 = atalhos por expansão
+    // ---- configurações (tema, cor, teclas, opções): guarda a seção [geral] antes de cada mudança
+    static List<List<string>> cfgUndo = new List<List<string>>(), cfgRedo = new List<List<string>>();
+    static bool cfgUndoing;
+    static DateTime cfgLastPush;
+
+    static List<string> TakeCfgSnap()
+    {
+        List<string> body = new List<string>();
+        bool inGeral = false;
+        foreach (string raw in (ReadIni() ?? DefaultIni).Replace("\r\n", "\n").Split('\n'))
+        {
+            string t = raw.Trim().TrimStart((char)0xFEFF);
+            if (t.StartsWith("[") && t.EndsWith("]")) { inGeral = t.ToLowerInvariant() == "[geral]"; continue; }
+            if (inGeral) body.Add(raw.TrimEnd('\r'));
+        }
+        while (body.Count > 0 && body[body.Count - 1].Trim().Length == 0) body.RemoveAt(body.Count - 1);
+        return body;
+    }
+
+    static void PushCfgUndo()
+    {
+        if ((DateTime.Now - cfgLastPush).TotalMilliseconds < 400 && cfgUndo.Count > 0) return; // vários ajustes de uma ação só = um passo
+        cfgLastPush = DateTime.Now;
+        cfgUndo.Add(TakeCfgSnap());
+        if (cfgUndo.Count > UNDO_MAX) cfgUndo.RemoveAt(0);
+        cfgRedo.Clear();
+        InvalidateUndoButtons();
+    }
+
+    static void RestoreCfgSnap(List<string> body)
+    {
+        cfgUndoing = true;
+        try { ReplaceIniSection("geral", body); }
+        finally { cfgUndoing = false; }
+        LoadConfig();
+        SetTip();
+        RepaintAll();
+    }
+
+    // ---- campos de texto (clip e expansão): desfazer e refazer várias vezes, palavra por palavra
+    class EditHist { public List<string> Texts = new List<string>(); public List<int> Sels = new List<int>(); public int Pos = -1; public DateTime Last; }
+    static Dictionary<IntPtr, EditHist> editHist = new Dictionary<IntPtr, EditHist>();
+    static bool editApplying;
+
+    static void ResetEditHist(IntPtr h)
+    {
+        EditHist e = new EditHist();
+        e.Texts.Add(CtlText(h));
+        e.Sels.Add(0);
+        e.Pos = 0;
+        editHist[h] = e;
+    }
+
+    static void RecordEdit(IntPtr h)
+    {
+        if (editApplying) return;
+        EditHist e;
+        if (!editHist.TryGetValue(h, out e)) { ResetEditHist(h); return; }
+        string t = CtlText(h);
+        if (e.Pos >= 0 && e.Texts[e.Pos] == t) return;
+        int sel = SendMessageW(h, 0x00B0, IntPtr.Zero, IntPtr.Zero).ToInt32() >> 16; // EM_GETSEL: fim da seleção
+        string prev = e.Pos >= 0 ? e.Texts[e.Pos] : "";
+        bool oneChar = t.Length == prev.Length + 1 && sel > 0 && sel <= t.Length && !char.IsWhiteSpace(t[sel - 1]) && !char.IsPunctuation(t[sel - 1]);
+        if (e.Pos < e.Texts.Count - 1) { e.Texts.RemoveRange(e.Pos + 1, e.Texts.Count - e.Pos - 1); e.Sels.RemoveRange(e.Pos + 1, e.Sels.Count - e.Pos - 1); }
+        if (oneChar && e.Pos > 0 && (DateTime.Now - e.Last).TotalMilliseconds < 1500) { e.Texts[e.Pos] = t; e.Sels[e.Pos] = sel; } // mesma palavra
+        else
+        {
+            e.Texts.Add(t);
+            e.Sels.Add(sel);
+            e.Pos = e.Texts.Count - 1;
+            if (e.Texts.Count > 200) { e.Texts.RemoveAt(0); e.Sels.RemoveAt(0); e.Pos--; }
+        }
+        e.Last = DateTime.Now;
+    }
+
+    static void EditUndo(IntPtr h, bool redo)
+    {
+        EditHist e;
+        if (!editHist.TryGetValue(h, out e)) return;
+        int np = e.Pos + (redo ? 1 : -1);
+        if (np < 0 || np >= e.Texts.Count) return;
+        e.Pos = np;
+        e.Last = DateTime.MinValue; // depois de desfazer, a próxima digitação começa um passo novo
+        editApplying = true;
+        try
+        {
+            SetWindowTextW(h, e.Texts[np]);
+            int sel = Math.Min(e.Sels[np], e.Texts[np].Length);
+            SendMessageW(h, 0x00B1, (IntPtr)sel, (IntPtr)sel); // EM_SETSEL
+            SendMessageW(h, 0x00B7, IntPtr.Zero, IntPtr.Zero); // EM_SCROLLCARET
+        }
+        finally { editApplying = false; }
+    }
+
+    // which: 0 = clips, 1 = atalhos por expansão, 2 ou 4 = configurações
     static void DoUndo(int which, bool redo)
     {
+        if (which == 2 || which == 4)
+        {
+            List<List<string>> cf = redo ? cfgRedo : cfgUndo, ct = redo ? cfgUndo : cfgRedo;
+            if (cf.Count == 0) return;
+            List<string> snap = cf[cf.Count - 1];
+            cf.RemoveAt(cf.Count - 1);
+            ct.Add(TakeCfgSnap());
+            RestoreCfgSnap(snap);
+            InvalidateUndoButtons();
+            return;
+        }
         if (!ResolveDirty(false)) return;
         if (which == 0)
         {
@@ -3710,6 +3949,8 @@ autoexclusao=nunca
         SetWindowTextW(hXAbbr, xSel ?? "");
         SetWindowTextW(hXText, v.Replace("\r\n", "\n").Replace("\n", "\r\n"));
         mgrLoading = false;
+        ResetEditHist(hXAbbr);
+        ResetEditHist(hXText);
         SetXDirty(false);
         InvalidateRect(GetDlgItem(hwndMgr, IDC_XPIN), IntPtr.Zero, true);
     }
@@ -4254,11 +4495,14 @@ autoexclusao=nunca
         FillRect(d.hDC, ref d.rcItem, onCard ? hWhiteBrush : hBgBrush);
         int l = d.rcItem.Left, t = d.rcItem.Top, w = d.rcItem.Right - d.rcItem.Left, h = d.rcItem.Bottom - d.rcItem.Top;
 
-        if (id == IDC_UNDO || id == IDC_REDO || id == IDC_XUNDO || id == IDC_XREDO) // desfazer / refazer
+        if (id == IDC_UNDO || id == IDC_REDO || id == IDC_XUNDO || id == IDC_XREDO || id == IDC_CUNDO || id == IDC_CREDO) // desfazer / refazer
         {
-            bool can = id == IDC_UNDO ? clipUndo.Count > 0 : id == IDC_REDO ? clipRedo.Count > 0 : id == IDC_XUNDO ? xUndo.Count > 0 : xRedo.Count > 0;
-            if (can) RoundRect(d.hDC, l, t, w, h, Px(7), down ? A_DOWN : A_WHITE, A_BTNBORDER);
-            DrawTextAt(d.hDC, (id == IDC_UNDO || id == IDC_XUNDO) ? "\uE7A7" : "\uE7A6", hIconFont, can ? C_ACCENT : C_LINE, l, t, l + w, t + h, 0x25);
+            bool can = id == IDC_UNDO ? clipUndo.Count > 0 : id == IDC_REDO ? clipRedo.Count > 0 : id == IDC_XUNDO ? xUndo.Count > 0
+                : id == IDC_XREDO ? xRedo.Count > 0 : id == IDC_CUNDO ? cfgUndo.Count > 0 : cfgRedo.Count > 0;
+            bool onBg = id == IDC_CUNDO || id == IDC_CREDO;
+            if (onBg) FillRect(d.hDC, ref d.rcItem, hBgBrush);
+            if (can) RoundRect(d.hDC, l, t, w, h, Px(7), down ? A_DOWN : (onBg ? A_BG : A_WHITE), A_BTNBORDER);
+            DrawTextAt(d.hDC, (id == IDC_UNDO || id == IDC_XUNDO || id == IDC_CUNDO) ? "\uE7A7" : "\uE7A6", hIconFont, can ? C_ACCENT : C_LINE, l, t, l + w, t + h, 0x25);
             return;
         }
         if ((id >= IDC_T_STARTUP && id <= IDC_T_EXPAND) || id == IDC_T_IMAGES || id == IDC_T_DATADIR) // chave liga/desliga
@@ -4425,7 +4669,8 @@ autoexclusao=nunca
                 DrawTextAt(hdc, mgrSel.W + " × " + mgrSel.H + " px", hSmallFont, C_GRAY, Px(376), Px(446), Px(790), Px(470), 0x25);
             }
             else
-                DrawTextAt(hdc, editDirty ? "Edição não salva — clique em Salvar para valer" : "Texto do clip selecionado  ·  edite e clique em Salvar",
+                DrawTextAt(hdc, editDirty ? "Edição não salva — clique em Salvar para valer"
+                    : (editClip != null && editClip.HasFormat ? "Clip com formatação (negrito, cores...)  ·  cola formatado" : "Texto do clip selecionado  ·  edite e clique em Salvar"),
                     hSmallFont, editDirty ? C_RED : C_GRAY, Px(376), Px(86), Px(726), Px(108), 0x8024);
         }
         else if (page == 1)
@@ -4530,6 +4775,7 @@ autoexclusao=nunca
         editClip = mgrSel;
         SetWindowTextW(hEdit, (mgrSel == null || mgrSel.IsImage) ? "" : mgrSel.Text.Replace("\r\n", "\n").Replace("\n", "\r\n"));
         mgrLoading = false;
+        ResetEditHist(hEdit);
         SetDirty(false);
         UpdateEditVisibility();
         InvalidateRect(GetDlgItem(hwndMgr, IDC_PIN), IntPtr.Zero, true); // rótulo Fixar/Soltar
@@ -4704,7 +4950,7 @@ autoexclusao=nunca
         }
         if (id == IDC_EDIT)
         {
-            if (code == 0x0300 && !mgrLoading) SetDirty(true); // EN_CHANGE
+            if (code == 0x0300 && !mgrLoading) { SetDirty(true); RecordEdit(hEdit); } // EN_CHANGE
             return;
         }
         if (id == IDC_XLIST)
@@ -4725,7 +4971,7 @@ autoexclusao=nunca
         }
         if (id == IDC_XABBR || id == IDC_XTEXT)
         {
-            if (code == 0x0300 && !mgrLoading) SetXDirty(true); // EN_CHANGE
+            if (code == 0x0300 && !mgrLoading) { SetXDirty(true); RecordEdit(id == IDC_XABBR ? hXAbbr : hXText); } // EN_CHANGE
             if (code == 0x0300 && id == IDC_XABBR) InvalidateXWarning(); // atualiza o aviso "Atalho já em uso"
             return;
         }
@@ -4938,6 +5184,7 @@ autoexclusao=nunca
             case IDC_FACTORY: FactoryReset(); return;
             case IDC_UNDO: case IDC_REDO: DoUndo(0, id == IDC_REDO); return;
             case IDC_XUNDO: case IDC_XREDO: DoUndo(1, id == IDC_XREDO); return;
+            case IDC_CUNDO: case IDC_CREDO: DoUndo(2, id == IDC_CREDO); return;
             case IDC_FEEDBACK: FeedbackDialog(); return;
 
             // ---------------- página Ajuda
@@ -5056,63 +5303,91 @@ autoexclusao=nunca
         if (hMouseHook == IntPtr.Zero) // o mouse só é observado enquanto a lista está aberta
             hMouseHook = SetWindowsHookExW(14, Marshal.GetFunctionPointerForDelegate(mouseProcRef), hInst, 0);
         int w = Px(540), h = PopupHeight();
-        int x = 0, y = 0;
-        bool placed = false;
-        if (popMode == MODE_HISTORY && cfgListPos) // abre onde o usuário deixou da última vez
-        {
-            x = cfgListX;
-            y = cfgListY;
-            placed = true;
-        }
-
-        GUITHREADINFO gti = new GUITHREADINFO();
-        gti.cbSize = Marshal.SizeOf(typeof(GUITHREADINFO));
-        if (!placed && GetGUIThreadInfo(0, ref gti) && gti.hwndCaret != IntPtr.Zero && gti.rcCaret.Bottom - gti.rcCaret.Top > 0)
-        {
-            POINT pt = new POINT();
-            pt.X = gti.rcCaret.Left;
-            pt.Y = gti.rcCaret.Bottom;
-            ClientToScreen(gti.hwndCaret, ref pt);
-            x = pt.X;
-            y = pt.Y + Px(6);
-            placed = true;
-        }
-        if (!placed)
-        {
-            IntPtr fg = GetForegroundWindow();
-            RECT rc;
-            if (fg != IntPtr.Zero && GetWindowRect(fg, out rc))
-            {
-                x = rc.Left + (rc.Right - rc.Left - w) / 2;
-                y = rc.Bottom - h - Px(70);
-            }
-            else
-            {
-                POINT pt;
-                GetCursorPos(out pt);
-                x = pt.X;
-                y = pt.Y + Px(20);
-            }
-        }
-        // mantém dentro da área útil do monitor
-        POINT at = new POINT();
-        at.X = x;
-        at.Y = y;
-        MONITORINFO mi = new MONITORINFO();
-        mi.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
-        if (GetMonitorInfoW(MonitorFromPoint(at, 2), ref mi))
-        {
-            if (x + w > mi.rcWork.Right) x = mi.rcWork.Right - w;
-            if (x < mi.rcWork.Left) x = mi.rcWork.Left;
-            if (y + h > mi.rcWork.Bottom) y = mi.rcWork.Bottom - h;
-            if (y < mi.rcWork.Top) y = mi.rcWork.Top;
-        }
+        int x, y;
+        PlaceNearText(w, h, out x, out y);
         FadeWindow(hwndPopup, true);
         SetWindowPos(hwndPopup, (IntPtr)(-1), x, y, w, h, 0x10 | 0x40); // topo, sem ativar
         RoundWindow(hwndPopup, w, h);
         PlaceShade(hwndPopup);
         InvalidateRect(hwndPopup, IntPtr.Zero, true);
         SetTimer(hwndMain, (IntPtr)TIMER_POPUP, ms, IntPtr.Zero);
+    }
+
+    [DllImport("oleacc.dll")]
+    static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint id, ref Guid iid, [MarshalAs(UnmanagedType.IDispatch)] out object obj);
+
+    // Onde está o cursor de texto (a barrinha piscando) do programa em uso, em coordenadas da tela.
+    static bool GetCaretRect(out RECT r)
+    {
+        r = new RECT();
+        GUITHREADINFO gti = new GUITHREADINFO();
+        gti.cbSize = Marshal.SizeOf(typeof(GUITHREADINFO));
+        bool got = GetGUIThreadInfo(0, ref gti);
+        if (got && gti.hwndCaret != IntPtr.Zero && gti.rcCaret.Bottom - gti.rcCaret.Top > 0)
+        {
+            POINT a = new POINT(), b = new POINT();
+            a.X = gti.rcCaret.Left; a.Y = gti.rcCaret.Top;
+            b.X = gti.rcCaret.Right; b.Y = gti.rcCaret.Bottom;
+            ClientToScreen(gti.hwndCaret, ref a);
+            ClientToScreen(gti.hwndCaret, ref b);
+            r.Left = a.X; r.Top = a.Y; r.Right = Math.Max(b.X, a.X + 1); r.Bottom = b.Y;
+            return true;
+        }
+        // Navegadores e programas modernos: pergunta pela acessibilidade do Windows
+        try
+        {
+            IntPtr target = got && gti.hwndFocus != IntPtr.Zero ? gti.hwndFocus : GetForegroundWindow();
+            if (target == IntPtr.Zero) return false;
+            Guid iid = new Guid("00020400-0000-0000-C000-000000000046"); // IDispatch
+            object acc;
+            if (AccessibleObjectFromWindow(target, 0xFFFFFFF8, ref iid, out acc) != 0 || acc == null) return false; // OBJID_CARET
+            object[] args = { 0, 0, 0, 0, 0 };
+            System.Reflection.ParameterModifier pm = new System.Reflection.ParameterModifier(5);
+            for (int i = 0; i < 4; i++) pm[i] = true;
+            acc.GetType().InvokeMember("accLocation", System.Reflection.BindingFlags.InvokeMethod, null, acc, args,
+                new System.Reflection.ParameterModifier[] { pm }, null, null);
+            int l = Convert.ToInt32(args[0]), t = Convert.ToInt32(args[1]), cw = Convert.ToInt32(args[2]), ch = Convert.ToInt32(args[3]);
+            Marshal.ReleaseComObject(acc);
+            if (ch <= 0 || (l == 0 && t == 0)) return false;
+            r.Left = l; r.Top = t; r.Right = l + Math.Max(1, cw); r.Bottom = t + ch;
+            return true;
+        }
+        catch { return false; }
+    }
+
+    // Abre logo abaixo da linha onde se escreve (ou logo acima, se não couber), sem cobri-la.
+    static void PlaceNearText(int w, int h, out int x, out int y)
+    {
+        RECT line;
+        if (!GetCaretRect(out line)) // sem cursor de texto conhecido: usa o ponteiro do mouse
+        {
+            POINT pt;
+            GetCursorPos(out pt);
+            line.Left = pt.X; line.Right = pt.X + 1;
+            line.Top = pt.Y - Px(12); line.Bottom = pt.Y + Px(14);
+        }
+        POINT at = new POINT();
+        at.X = line.Left;
+        at.Y = line.Bottom;
+        RECT work = new RECT();
+        work.Left = 0; work.Top = 0; work.Right = GetSystemMetrics(0); work.Bottom = GetSystemMetrics(1);
+        MONITORINFO mi = new MONITORINFO();
+        mi.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+        if (GetMonitorInfoW(MonitorFromPoint(at, 2), ref mi)) work = mi.rcWork;
+        int gap = Px(8);
+        x = line.Left - Px(24);
+        if (line.Bottom + gap + h <= work.Bottom) y = line.Bottom + gap;          // embaixo da linha
+        else if (line.Top - gap - h >= work.Top) y = line.Top - gap - h;          // em cima da linha
+        else // não cabe nem em cima nem embaixo: ao lado do cursor
+        {
+            x = line.Right + Px(24);
+            if (x + w > work.Right) x = line.Left - Px(24) - w;
+            y = line.Top - h / 3;
+        }
+        if (x + w > work.Right) x = work.Right - w;
+        if (x < work.Left) x = work.Left;
+        if (y + h > work.Bottom) y = work.Bottom - h;
+        if (y < work.Top) y = work.Top;
     }
 
     static void HidePopup()
@@ -5179,8 +5454,14 @@ autoexclusao=nunca
                 DrawImageFit(mem, ThumbOf(c), tx + Px(2), by + Px(2), bw - Px(4), bh - Px(4));
                 tx += bw + Px(8);
             }
-            int right = hover ? w - Px(50) : w - Px(16);
+            int right = hover ? w - Px(86) : w - Px(16);
             DrawTextAt(mem, popLines[i], f, C_TEXT, tx, top, right, bottom, 0x8024);
+            if (hover) // estrela para fixar/soltar
+            {
+                if (popHoverStar) RoundRect(mem, w - Px(80), top + Px(3), Px(30), Px(POP_ROW) - Px(6), Px(6), A_DOWN, 0);
+                DrawTextAt(mem, c.Pinned ? "\uE735" : "\uE734", hIconFont, (c.Pinned || popHoverStar) ? C_ACCENT : C_GRAY,
+                    w - Px(80), top, w - Px(50), bottom, 0x25);
+            }
             if (hover) // lixeira para excluir o item
             {
                 bool armed = popTrashArmed == c;
@@ -5188,6 +5469,11 @@ autoexclusao=nunca
                 DrawTextAt(mem, armed ? "?" : "", armed ? hFontBold : hIconFont, (popHoverTrash || armed) ? C_RED : C_GRAY,
                     w - Px(46), top, w - Px(16), bottom, 0x25);
             }
+        }
+        if (popItemDrag && popDropLine >= 1) // onde o item arrastado vai entrar
+        {
+            int ly = Px(8) + popDropLine * Px(POP_ROW) - Px(1);
+            RoundRect(mem, Px(12), ly, w - Px(24), Px(3), Px(2), A_ACCENT, 0);
         }
         // cabeçalho: "Limpar" e X
         int hy = Px(10), hs = Px(26);
@@ -5422,6 +5708,24 @@ autoexclusao=nunca
                         GetWindowRect(hwnd, out popDragRect);
                         SetCapture(hwnd);
                     }
+                    else if (popMode == MODE_HISTORY && popNumbered && !OnPopupTrash(lParam) && !OnPopupStar(lParam))
+                    {
+                        int pl = PopupLineAt(lParam);
+                        if (pl >= 1 && pl - 1 < popClips.Count) // pode virar arraste do item para outra posição
+                        {
+                            popPress = pl;
+                            popItemDrag = false;
+                            popPressY = y;
+                            SetCapture(hwnd);
+                        }
+                    }
+                    return IntPtr.Zero;
+                }
+                case 0x0205: // WM_RBUTTONUP: menu do item
+                {
+                    if (popMode != MODE_HISTORY || !popNumbered) return IntPtr.Zero;
+                    int pl = PopupLineAt(lParam);
+                    if (pl >= 1 && pl - 1 < popClips.Count) PopupMenu(popClips[pl - 1]);
                     return IntPtr.Zero;
                 }
                 case 0x0200: // WM_MOUSEMOVE
@@ -5435,14 +5739,28 @@ autoexclusao=nunca
                         PlaceShade(hwnd);
                         return IntPtr.Zero;
                     }
+                    if (popPress >= 1) // arrastando um item: mostra onde ele vai entrar
+                    {
+                        int my = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
+                        if (!popItemDrag && Math.Abs(my - popPressY) > Px(6)) popItemDrag = true;
+                        if (popItemDrag)
+                        {
+                            int dl = (my - Px(8) + Px(POP_ROW) / 2) / Px(POP_ROW);
+                            dl = Math.Max(1, Math.Min(popLines.Count, dl));
+                            if (dl != popDropLine) { popDropLine = dl; InvalidateRect(hwnd, IntPtr.Zero, false); }
+                            return IntPtr.Zero;
+                        }
+                    }
                     int line = OnPopupClose(lParam) ? -2 : (OnPopupClear(lParam) ? -3 : PopupLineAt(lParam));
                     if (line == 0) line = -1;
                     bool trash = line >= 1 && popNumbered && OnPopupTrash(lParam);
-                    if (line != popHover || trash != popHoverTrash)
+                    bool star = line >= 1 && popNumbered && OnPopupStar(lParam);
+                    if (line != popHover || trash != popHoverTrash || star != popHoverStar)
                     {
                         int old = popHover;
                         popHover = line;
                         popHoverTrash = trash;
+                        popHoverStar = star;
                         for (int k = 1; k < popScale.Length; k++) // só um item ampliado por vez
                             if (k != line && popScale[k] > 0f) { popScale[k] = 0f; InvalidatePopRow(k); }
                         if (old < 1 || line < 1) InvalidatePopRow(0); // cabeçalho (X / Limpar)
@@ -5454,28 +5772,45 @@ autoexclusao=nunca
                 }
                 case 0x0215: // WM_CAPTURECHANGED
                     popDrag = false;
+                    if (popItemDrag) { popItemDrag = false; popDropLine = -1; InvalidateRect(hwnd, IntPtr.Zero, false); }
+                    popPress = -1;
                     break;
                 case WM_LBUTTONUP: // clique: cola o item (a janela não tira o foco do programa em uso)
                 {
-                    if (popDrag) // fim do arraste: guarda a posição
+                    if (popDrag) // fim do arraste da janela (vale só enquanto ela está aberta)
                     {
                         popDrag = false;
                         ReleaseCapture();
-                        RECT r;
-                        if (GetWindowRect(hwnd, out r))
-                        {
-                            cfgListPos = true;
-                            cfgListX = r.Left;
-                            cfgListY = r.Top;
-                            SetIniValue("geral", "lista_pos", r.Left + "," + r.Top);
-                        }
                         SetTimer(hwndMain, (IntPtr)TIMER_POPUP, 20000, IntPtr.Zero);
                         return IntPtr.Zero;
+                    }
+                    if (popPress >= 1) // item pressionado: arrastou para outra posição ou só clicou
+                    {
+                        int from = popPress;
+                        bool moved = popItemDrag;
+                        popPress = -1;
+                        popItemDrag = false;
+                        ReleaseCapture();
+                        if (moved)
+                        {
+                            int drop = popDropLine;
+                            popDropLine = -1;
+                            if (from - 1 < popClips.Count && drop >= 1)
+                            {
+                                int fi = clips.IndexOf(popClips[from - 1]);
+                                int ti = drop - 1 < popClips.Count ? clips.IndexOf(popClips[drop - 1]) : clips.Count;
+                                if (fi >= 0 && ti >= 0) { MoveClip(fi, ti); RefreshPopupList(); }
+                            }
+                            InvalidateRect(hwnd, IntPtr.Zero, false);
+                            SetTimer(hwndMain, (IntPtr)TIMER_POPUP, 20000, IntPtr.Zero);
+                            return IntPtr.Zero;
+                        }
                     }
                     if (OnPopupClose(lParam)) { HidePopup(); return IntPtr.Zero; } // botão X
                     if (popNumbered && OnPopupClear(lParam)) { PopupClear(); return IntPtr.Zero; } // "Limpar"
                     int line = PopupLineAt(lParam);
                     if (line >= 1 && popNumbered && OnPopupTrash(lParam) && line - 1 < popClips.Count) { PopupTrash(popClips[line - 1]); return IntPtr.Zero; }
+                    if (line >= 1 && popNumbered && OnPopupStar(lParam) && line - 1 < popClips.Count) { PopupPin(popClips[line - 1]); return IntPtr.Zero; }
                     int mode = popMode;
                     string abbr = popAbbr;
                     if (line < 1) return IntPtr.Zero;
@@ -5516,6 +5851,66 @@ autoexclusao=nunca
         int x = (short)(lParam.ToInt64() & 0xFFFF), y = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
         int w = Px(540);
         return x >= w - Px(120) && x < w - Px(46) && y >= Px(6) && y < Px(40);
+    }
+
+    static bool OnPopupStar(IntPtr lParam)
+    {
+        int x = (short)(lParam.ToInt64() & 0xFFFF);
+        int w = Px(540);
+        return x >= w - Px(82) && x < w - Px(48);
+    }
+
+    // Estrela: fixa ou solta o item na hora.
+    static void PopupPin(Clip c)
+    {
+        PushClipUndo();
+        c.Pinned = !c.Pinned;
+        SaveClips();
+        RefreshList();
+        RefreshPopupList();
+    }
+
+    // Botão direito num item da lista rápida.
+    static void PopupMenu(Clip c)
+    {
+        List<MI> mi = new List<MI>();
+        mi.Add(Item(1, "Colar"));
+        MI plain = Item(2, "Colar sem formatação");
+        plain.Off = c.IsImage || !c.HasFormat;
+        mi.Add(plain);
+        mi.Add(Sep());
+        mi.Add(Item(3, c.Pinned ? "☆  Soltar (deixar de fixar)" : "★  Fixar nesta posição"));
+        mi.Add(Item(4, "↑  Subir"));
+        mi.Add(Item(5, "↓  Descer"));
+        mi.Add(Item(6, "⤒  Mover para o topo"));
+        mi.Add(Item(7, "⤓  Mover para o fim"));
+        mi.Add(Sep());
+        mi.Add(Item(8, "Excluir"));
+        IntPtr fg = GetForegroundWindow(); // o programa onde a pessoa está escrevendo
+        POINT pt;
+        GetCursorPos(out pt);
+        KillTimer(hwndMain, (IntPtr)TIMER_POPUP);
+        int cmd = ShowMenu(mi, pt.X, pt.Y, fg);
+        if (popMode == MODE_HISTORY) SetTimer(hwndMain, (IntPtr)TIMER_POPUP, 20000, IntPtr.Zero);
+        int i = clips.IndexOf(c);
+        if (cmd == 0 || i < 0) return;
+        switch (cmd)
+        {
+            case 1: case 2:
+                HidePopup();
+                if (!paused) PasteClip(c, cmd == 2);
+                return;
+            case 3: PopupPin(c); return;
+            case 4: if (i > 0) MoveClip(i, i - 1); break;
+            case 5: if (i < clips.Count - 1) MoveClip(i, i + 2); break;
+            case 6: MoveClip(i, 0); break;
+            case 7: MoveClip(i, clips.Count); break;
+            case 8:
+                popTrashArmed = c; // excluir pelo menu já é a confirmação
+                PopupTrash(c);
+                return;
+        }
+        RefreshPopupList();
     }
 
     static bool OnPopupTrash(IntPtr lParam)
@@ -5669,6 +6064,8 @@ autoexclusao=nunca
 
         fmtExclude = RegisterClipboardFormatW("ExcludeClipboardContentFromMonitorProcessing");
         fmtPng = RegisterClipboardFormatW("PNG");
+        fmtHtml = RegisterClipboardFormatW("HTML Format");
+        fmtRtf = RegisterClipboardFormatW("Rich Text Format");
         msgTaskbar = RegisterWindowMessageW("TaskbarCreated");
 
         AddTray();
@@ -5694,12 +6091,15 @@ autoexclusao=nunca
         MSG msg;
         while (GetMessageW(out msg, IntPtr.Zero, 0, 0) > 0)
         {
-            if (msg.message == 0x0100 && hwndMgr != IntPtr.Zero && hDlg == IntPtr.Zero && (page == 0 || page == 1) && KeyDown(0x11) &&
+            if (msg.message == 0x0100 && hwndMgr != IntPtr.Zero && hDlg == IntPtr.Zero && hMenuWnd == IntPtr.Zero && KeyDown(0x11) &&
                 (msg.wParam.ToInt32() == 'Z' || msg.wParam.ToInt32() == 'Y') && (msg.hwnd == hwndMgr || GetParent(msg.hwnd) == hwndMgr))
             {
-                IntPtr f = GetFocus(); // dentro de um texto em edição, o Ctrl+Z é do próprio campo
+                bool redo = msg.wParam.ToInt32() == 'Y' || KeyDown(0x10); // Ctrl+Y ou Ctrl+Shift+Z refaz
+                IntPtr f = GetFocus(); // dentro de um texto em edição: desfaz a digitação, várias vezes
                 bool typing = (f == hEdit && editDirty) || ((f == hXText || f == hXAbbr) && expDirty);
-                if (!typing) { DoUndo(page, msg.wParam.ToInt32() == 'Y'); continue; }
+                if (typing) { EditUndo(f, redo); continue; }
+                if (page != 3) DoUndo(page, redo);
+                continue;
             }
             if (hwndMgr != IntPtr.Zero && IsDialogMessageW(hwndMgr, ref msg)) continue;
             TranslateMessage(ref msg);

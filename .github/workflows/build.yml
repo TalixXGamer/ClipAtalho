@@ -42,6 +42,8 @@ jobs:
         run: |
           $v = '${{ steps.ver.outputs.version }}'
           Compress-Archive -Path out\ClipAtalho -DestinationPath "out\ClipAtalho $v (portatil).zip"
+          # Copia com nome fixo: o link "releases/latest/download/ClipAtalho-portatil.zip" sempre baixa a versão mais nova
+          Copy-Item "out\ClipAtalho $v (portatil).zip" out\ClipAtalho-portatil.zip
 
       - name: Montar o pacote MSIX
         shell: pwsh
@@ -83,5 +85,9 @@ jobs:
         run: |
           $v = '${{ steps.ver.outputs.version }}'
           gh release view "v$v" 2>$null
-          if ($LASTEXITCODE -eq 0) { Write-Host "A versão $v já foi publicada."; exit 0 }
-          gh release create "v$v" --target $env:GITHUB_SHA "out\ClipAtalho $v (portatil).zip" --title "ClipAtalho $v" --notes "Baixe o arquivo **ClipAtalho $v (portatil).zip**, extraia e abra **ClipAtalho\ClipAtalho.exe**."
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "A versão $v já foi publicada; atualizando o arquivo de link fixo."
+            gh release upload "v$v" out\ClipAtalho-portatil.zip --clobber
+            exit $LASTEXITCODE
+          }
+          gh release create "v$v" --target $env:GITHUB_SHA out\ClipAtalho-portatil.zip "out\ClipAtalho $v (portatil).zip" --title "ClipAtalho $v" --notes "Baixe o arquivo **ClipAtalho-portatil.zip**, extraia e abra **ClipAtalho\ClipAtalho.exe**."

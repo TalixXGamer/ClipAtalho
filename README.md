@@ -16,7 +16,7 @@
 ## Como baixar
 - **Site:** [talixxgamer.github.io/ClipAtalho](https://talixxgamer.github.io/ClipAtalho/)
 - **Microsoft Store:** em breve.
-- **Versão portátil (sem instalar):** na página [Releases](https://github.com/TalixXGamer/ClipAtalho/releases), baixe o arquivo `.zip` portátil da versão mais recente, extraia e abra `ClipAtalho\ClipAtalho.exe`.
+- **Versão portátil (sem instalar):** [baixe aqui o ClipAtalho-portatil.zip](https://github.com/TalixXGamer/ClipAtalho/releases/latest/download/ClipAtalho-portatil.zip), extraia e abra `ClipAtalho\ClipAtalho.exe`.
 - **Onde não é possível baixar .exe:** baixe `ClipAtalho.cs` e `Compilar ClipAtalho.bat`, coloque os dois na mesma pasta e dê dois cliques no `.bat`. Ele usa o compilador que já vem no Windows e cria a pasta `ClipAtalho` com o programa.
 
 Requisitos: Windows 10 ou 11.

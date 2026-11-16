@@ -339,14 +339,17 @@ static class ClipAtalho
     const uint WM_DESTROY = 0x0002, WM_PAINT = 0x000F, WM_MOUSEACTIVATE = 0x0021, WM_KEYDOWN = 0x0100,
         WM_SYSKEYDOWN = 0x0104, WM_TIMER = 0x0113, WM_LBUTTONUP = 0x0202, WM_RBUTTONUP = 0x0205,
         WM_HOTKEY = 0x0312, WM_COMMAND = 0x0111, WM_CLOSE = 0x0010, WM_CLIPBOARDUPDATE = 0x031D,
-        WM_TRAY = 0x8001, WM_SHOWPOPUP = 0x8002, WM_HIDEPOPUP = 0x8003, WM_FEEDBACKDONE = 0x8010;
+        WM_TRAY = 0x8001, WM_SHOWPOPUP = 0x8002, WM_HIDEPOPUP = 0x8003, WM_FEEDBACKDONE = 0x8010, WM_POPSCROLL = 0x8011;
     const int TIMER_WAITMODS = 1, TIMER_RESTORE = 2, TIMER_POPUP = 3, TIMER_CONFIG = 4, TIMER_FADE = 5,
         TIMER_WAVE = 6, TIMER_CLIPREAD = 7, TIMER_ARM = 8;
     const uint CF_UNICODETEXT = 13;
     const int VK_BACK = 0x08, VK_TAB = 0x09, VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12,
         VK_ESCAPE = 0x1B, VK_LWIN = 0x5B, VK_RWIN = 0x5C;
     const int MODE_NONE = 0, MODE_SUGGEST = 1, MODE_HISTORY = 2;
-    const int ID_LIST = 10, MAX_CLIPS = 20;
+    const int ID_LIST = 10, MAX_IMAGES = 100;
+    static int cfgLimit = 100; // 0 = sem limite
+    static int MaxClips { get { return cfgLimit <= 0 ? int.MaxValue : cfgLimit; } }
+    static readonly int[] LimitValues = { 20, 50, 100, 200, 0 };
     const int CMD_SHOW = 1, CMD_EDIT = 2, CMD_DIR = 3, CMD_PAUSE = 4, CMD_CLEAR = 5, CMD_EXIT = 6, CMD_MANAGE = 7, CMD_HELP = 8;
     const int IDC_LIST = 100, IDC_EDIT = 101, IDC_UP = 102, IDC_DOWN = 103, IDC_PIN = 104, IDC_NEW = 105, IDC_DEL = 106;
 
@@ -394,11 +397,58 @@ static class ClipAtalho
     static uint cfgMods = 2;
     static string cfgModsLabel = "Ctrl";
     static bool cfgExpand = true, cfgSaveAll = true, iniCreated, cfgImages = true, cfgListPos;
-    static int cfgAutoDel; // minutos (0 = nunca, -1 = toda meia-noite)
-    static DateTime autoDelDay = DateTime.Today;
-    static readonly string[] AutoDelKeys = { "nunca", "30min", "1h", "2h", "24h", "meianoite" };
-    static readonly string[] AutoDelNames = { "Nunca", "Depois de 30 minutos", "Depois de 1 hora", "Depois de 2 horas", "Depois de 24 horas", "Toda meia-noite" };
-    static readonly int[] AutoDelMinutes = { 0, 30, 60, 120, 1440, -1 };
+    // Limpeza automática: 0 nunca | 1 itens mais antigos que cfgAutoDel minutos | 2 todo dia | 3 toda semana | 4 a cada N horas
+    static int autoMode, cfgAutoDel, autoHour, autoMinute, autoWeekDay, autoEvery;
+    static DateTime lastClean = DateTime.MinValue;
+    static readonly string[] AutoDelKeys = { "30min", "1h", "2h", "24h" };
+    static readonly string[] AutoDelNames = { "Itens com mais de 30 minutos", "Itens com mais de 1 hora", "Itens com mais de 2 horas", "Itens com mais de 24 horas" };
+    static readonly int[] AutoDelMinutes = { 30, 60, 120, 1440 };
+    static readonly string[] WeekNames = { "domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado" };
+
+    static bool ParseHM(string t, out int h, out int m)
+    {
+        h = m = 0;
+        string[] p = t.Trim().Replace('h', ':').Split(':');
+        if (p.Length < 1 || !int.TryParse(p[0], out h)) return false;
+        if (p.Length > 1 && p[1].Length > 0 && !int.TryParse(p[1], out m)) return false;
+        return h >= 0 && h <= 23 && m >= 0 && m <= 59;
+    }
+
+    static void ParseAutoDel(string val)
+    {
+        string[] p = val.Trim().ToLowerInvariant().Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        autoMode = 0;
+        if (p.Length == 0) return;
+        int ai = Array.IndexOf(AutoDelKeys, p[0]);
+        if (ai >= 0) { autoMode = 1; cfgAutoDel = AutoDelMinutes[ai]; return; }
+        if (p[0] == "meianoite") { autoMode = 2; autoHour = 0; autoMinute = 0; return; } // versões antigas
+        if (p[0] == "diario" && p.Length > 1 && ParseHM(p[1], out autoHour, out autoMinute)) { autoMode = 2; return; }
+        if (p[0] == "semanal" && p.Length > 2 && int.TryParse(p[1], out autoWeekDay) && autoWeekDay >= 0 && autoWeekDay <= 6
+            && ParseHM(p[2], out autoHour, out autoMinute)) { autoMode = 3; return; }
+        if (p[0] == "cada" && p.Length > 1 && int.TryParse(p[1], out autoEvery) && autoEvery >= 1 && autoEvery <= 720) { autoMode = 4; return; }
+    }
+
+    static string AutoDelLabel()
+    {
+        switch (autoMode)
+        {
+            case 1: return AutoDelNames[Math.Max(0, Array.IndexOf(AutoDelMinutes, cfgAutoDel))];
+            case 2: return "Zerar todo dia às " + autoHour.ToString("00") + ":" + autoMinute.ToString("00");
+            case 3: return "Zerar toda " + WeekNames[autoWeekDay] + " às " + autoHour.ToString("00") + ":" + autoMinute.ToString("00");
+            case 4: return "Zerar a cada " + autoEvery + (autoEvery == 1 ? " hora" : " horas");
+        }
+        return "Nunca";
+    }
+
+    // Último horário agendado que já passou (para saber se a limpeza está pendente).
+    static DateTime LastScheduled(DateTime now)
+    {
+        DateTime t = now.Date.AddHours(autoHour).AddMinutes(autoMinute);
+        if (autoMode == 2) return t <= now ? t : t.AddDays(-1);
+        int back = ((int)now.DayOfWeek - autoWeekDay + 7) % 7;
+        t = t.AddDays(-back);
+        return t <= now ? t : t.AddDays(-7);
+    }
     static int cfgListX, cfgListY;
     static Dictionary<string, string> cfgAbbr = new Dictionary<string, string>();
     static List<string> cfgAbbrOrder = new List<string>();  // ordem dos atalhos na lista
@@ -427,6 +477,17 @@ static class ClipAtalho
             if (nCode == 0 && popMode != MODE_NONE && hMenuWnd == IntPtr.Zero)
             {
                 uint m = (uint)wParam.ToInt64();
+                if (m == 0x020A && popMode == MODE_HISTORY) // roda do mouse sobre a lista: rola
+                {
+                    int x0 = Marshal.ReadInt32(lParam), y0 = Marshal.ReadInt32(lParam, 4);
+                    RECT pr;
+                    if (GetWindowRect(hwndPopup, out pr) && x0 >= pr.Left && x0 < pr.Right && y0 >= pr.Top && y0 < pr.Bottom)
+                    {
+                        int delta = (short)((Marshal.ReadInt32(lParam, 8) >> 16) & 0xFFFF);
+                        PostMessageW(hwndMain, WM_POPSCROLL, (IntPtr)(delta > 0 ? -3 : 3), IntPtr.Zero);
+                        return (IntPtr)1;
+                    }
+                }
                 if (m == 0x0201 || m == 0x0204 || m == 0x0207 || m == 0x020B) // botão esquerdo, direito, meio, laterais
                 {
                     int x = Marshal.ReadInt32(lParam), y = Marshal.ReadInt32(lParam, 4);
@@ -449,7 +510,7 @@ static class ClipAtalho
     static uint fmtExclude, msgTaskbar;
     static NOTIFYICONDATA nid;
     static bool trayReady;
-    static bool[] registeredOK = new bool[21]; // 1..10 = teclado principal, 11..20 = teclado numérico
+    static bool[] registeredOK = new bool[31]; // 1..10 = teclado principal, 11..20 = teclado numérico, 21..29 = +Shift (sem formatação)
 
     // Registro de diagnóstico (ClipAtalho.log). Nunca grava o conteúdo dos clips, só tamanhos.
     static void Log(string s)
@@ -486,8 +547,11 @@ cor=verde
 expansao=sim
 ; Clips de imagem (prints e figuras copiadas): sim ou nao. As imagens ficam na pasta ""ClipAtalho imagens"".
 imagens=sim
-; Apagar sozinho os clips NÃO fixados: nunca, 30min, 1h, 2h, 24h ou meianoite (os fixados nunca são apagados)
+; Limpeza automática dos clips NÃO fixados (os fixados nunca são apagados):
+;   nunca | 30min | 1h | 2h | 24h (itens mais antigos que isso) | diario 18:00 | semanal 1 08:00 (0 = domingo) | cada 6 (horas)
 autoexclusao=nunca
+; Tamanho máximo da lista: 20, 50, 100, 200 ou 0 (sem limite). Imagens: no máximo 100.
+limite=100
 
 [atalhos]
 ; atalho=texto   (cadastre e edite pela tela ""Atalhos por Expansão"")
@@ -575,7 +639,7 @@ autoexclusao=nunca
     // Grava (ou cria) uma chave do .ini preservando o restante do arquivo.
     static void SetIniValue(string section, string key, string value)
     {
-        if (section == "geral" && !cfgUndoing && key != "lista_pos") PushCfgUndo();
+        if (section == "geral" && !cfgUndoing && key != "lista_pos" && key != "ultima_limpeza") PushCfgUndo();
         try
         {
             string text = ReadIni() ?? DefaultIni;
@@ -673,6 +737,8 @@ autoexclusao=nunca
         cfgImages = true;
         cfgListPos = false;
         cfgAutoDel = 0;
+        autoMode = 0;
+        cfgLimit = 100;
         ParseMods("", out cfgMods, out cfgModsLabel);
         string section = "";
         foreach (string rawLine in text.Split('\n'))
@@ -698,10 +764,18 @@ autoexclusao=nunca
                     string v = val.ToLowerInvariant();
                     cfgExpand = (v == "sim" || v == "s" || v == "1" || v == "on");
                 }
-                else if (key == "autoexclusao")
+                else if (key == "autoexclusao") ParseAutoDel(val);
+                else if (key == "ultima_limpeza")
                 {
-                    int ai = Array.IndexOf(AutoDelKeys, val.ToLowerInvariant());
-                    cfgAutoDel = ai > 0 ? AutoDelMinutes[ai] : 0;
+                    DateTime lt;
+                    if (DateTime.TryParseExact(val, "yyyyMMddHHmm", null, System.Globalization.DateTimeStyles.None, out lt)) lastClean = lt;
+                }
+                else if (key == "limite")
+                {
+                    string lv = val.ToLowerInvariant();
+                    int li;
+                    if (lv == "sem" || lv == "semlimite" || lv == "0") cfgLimit = 0;
+                    else if (int.TryParse(lv, out li) && li >= 5) cfgLimit = li;
                 }
                 else if (key == "lista_pos")
                 {
@@ -954,8 +1028,10 @@ autoexclusao=nunca
 
     static void RegisterHotkeys()
     {
-        for (int i = 1; i <= 20; i++)
+        for (int i = 1; i <= 29; i++)
             if (registeredOK[i]) { UnregisterHotKey(hwndMain, i); registeredOK[i] = false; }
+        if ((cfgMods & 4) == 0) // mesma combinação + Shift: cola sem formatação
+            for (int d = 1; d <= 9; d++) registeredOK[20 + d] = RegisterHotKey(hwndMain, 20 + d, cfgMods | 4 | 0x4000, (uint)('0' + d));
         List<string> failed = new List<string>();
         for (int i = 1; i <= 20; i++)
         {
@@ -1006,7 +1082,7 @@ autoexclusao=nunca
             if (c.Pinned) pinned++;
             else if (c != front && !Same(c, cand)) un.Add(c);
         }
-        int maxUn = Math.Max(0, MAX_CLIPS - pinned);
+        int maxUn = Math.Max(0, MaxClips - pinned);
         if (un.Count > maxUn) un.RemoveRange(maxUn, un.Count - maxUn);
         List<Clip> res = new List<Clip>();
         int total = pinned + un.Count, u = 0;
@@ -1017,6 +1093,10 @@ autoexclusao=nunca
         }
         for (int i = total; i < clips.Count; i++) if (clips[i].Pinned) res.Add(clips[i]);
         while (u < un.Count) res.Add(un[u++]);
+        int imgs = 0;
+        for (int i = 0; i < res.Count; i++) if (res[i].IsImage) imgs++;
+        for (int i = res.Count - 1; i >= 0 && imgs > MAX_IMAGES; i--)
+            if (res[i].IsImage && !res[i].Pinned) { res.RemoveAt(i); imgs--; } // imagens pesam: no máximo 100
         clips = res;
         ReleaseUnusedImages();
         if (cfgSaveAll) SaveClips();
@@ -1479,7 +1559,7 @@ autoexclusao=nunca
                 }
                 if (!inClips || t.Length == 0 || t[0] == ';') continue;
                 int eq = line.IndexOf('=');
-                if (eq < 1 || clips.Count >= MAX_CLIPS) continue;
+                if (eq < 1 || clips.Count >= MaxClips) continue;
                 string key = line.Substring(0, eq).Trim().ToLowerInvariant();
                 if (key == "fixo_img" || key == "normal_img")
                 {
@@ -1509,7 +1589,7 @@ autoexclusao=nunca
         foreach (string raw in old.Split('\n'))
         {
             string line = raw.TrimEnd('\r').TrimStart((char)0xFEFF);
-            if (line.Length < 3 || line[1] != '\t' || clips.Count >= MAX_CLIPS) continue;
+            if (line.Length < 3 || line[1] != '\t' || clips.Count >= MaxClips) continue;
             clips.Add(new Clip(UnescClip(line.Substring(2)), line[0] == 'F'));
         }
         SaveClips();
@@ -2063,7 +2143,24 @@ autoexclusao=nunca
     static int popMemW, popMemH;
     const int POP_ROW = 30;
 
-    static int PopupHeight() { return Px(16) + popLines.Count * Px(POP_ROW); }
+    const int POP_VISIBLE = 12; // itens visíveis de uma vez; o resto rola com a roda do mouse
+    static int popScroll;
+    static int PopVisible() { return Math.Min(Math.Max(0, popLines.Count - 1), POP_VISIBLE); }
+    static int PopupHeight() { return Px(16) + (1 + PopVisible()) * Px(POP_ROW); }
+    static int PopRowTop(int i) { return Px(8) + (i == 0 ? 0 : i - popScroll) * Px(POP_ROW); }
+    static bool PopRowVisible(int i) { return i == 0 || (i > popScroll && i <= popScroll + PopVisible()); }
+
+    static void PopupScroll(int rows)
+    {
+        int max = Math.Max(0, popLines.Count - 1 - PopVisible());
+        int ns = Math.Max(0, Math.Min(max, popScroll + rows));
+        if (ns == popScroll) return;
+        popScroll = ns;
+        popHover = -1;
+        popHoverTrash = popHoverStar = false;
+        InvalidateRect(hwndPopup, IntPtr.Zero, false);
+        SetTimer(hwndMain, (IntPtr)TIMER_POPUP, 20000, IntPtr.Zero);
+    }
 
     static void BuildHistoryLines()
     {
@@ -2087,10 +2184,12 @@ autoexclusao=nunca
             popNumbered = true;
         }
         popScale = new float[popLines.Count];
+        popScroll = Math.Max(0, Math.Min(popScroll, popLines.Count - 1 - PopVisible()));
     }
 
     static void ShowHistory()
     {
+        popScroll = 0;
         BuildHistoryLines();
         popMode = MODE_HISTORY;
         ShowPopup(20000);
@@ -2118,7 +2217,8 @@ autoexclusao=nunca
         RECT r = new RECT();
         r.Left = 0;
         r.Right = Px(540);
-        r.Top = Px(8) + i * Px(POP_ROW) - Px(2);
+        if (!PopRowVisible(i)) return;
+        r.Top = PopRowTop(i) - Px(2);
         r.Bottom = r.Top + Px(POP_ROW) + Px(4);
         InvalidateRectArea(hwndPopup, ref r, false);
     }
@@ -2228,11 +2328,11 @@ autoexclusao=nunca
         IDC_XUP = 146, IDC_XDOWN = 147, IDC_XPIN = 148, IDC_XCLEAR = 149, IDC_THEME = 150, IDC_COLOR = 152, IDC_DELPIN = 160, IDC_T_IMAGES = 161, IDC_XSAVENEW = 162, IDC_XSORT = 163, IDC_CLOSE = 164,
         IDC_SEG = 180, IDC_BK_CLIPS = 182, IDC_BK_X = 183, IDC_BK_ALL = 184, IDC_RESTOREBK = 185, IDC_AUTODEL = 186,
         IDC_T_DATADIR = 187, IDC_DATADIR = 188, IDC_CONFLICT = 189, IDC_FACTORY = 190, IDC_FEEDBACK = 191,
-        IDC_UNDO = 192, IDC_REDO = 193, IDC_XUNDO = 194, IDC_XREDO = 195, IDC_CUNDO = 196, IDC_CREDO = 197,
+        IDC_UNDO = 192, IDC_REDO = 193, IDC_XUNDO = 194, IDC_XREDO = 195, IDC_CUNDO = 196, IDC_CREDO = 197, IDC_LIMIT = 198, IDC_IN_EDIT = 214,
         IDC_FB_SUG = 210, IDC_FB_REC = 211, IDC_FB_MAIL = 212, IDC_FB_MSG = 213;
     const string RUNKEY = @"Software\Microsoft\Windows\CurrentVersion\Run";
     const string INSTAGRAM = "https://www.instagram.com/talespsg";
-    const string VERSION = "1.1.0 16-11-2026";
+    const string VERSION = "1.2.0 16-11-2026";
     static readonly string[] PageTitles = { "Seus clips", "Atalhos por Expansão", "Configurações", "Ajuda", "Configurações" };
     static readonly string[] ModNames = { "Ctrl", "Shift", "Alt", "Win" };
     static readonly uint[] ModBits = { 2, 4, 1, 8 };
@@ -2245,7 +2345,8 @@ autoexclusao=nunca
     static WndProcDelegate listProcRef, dlgProcRef;
     static IntPtr oldListProc, hDlg, hHelp, hAccentBrush, hHeadFont;
     static int dlgResult, dlgEscResult = 2, dlgPrimary = 3;
-    static bool dlgFeedback, fbComplaint;
+    static bool dlgFeedback, fbComplaint, dlgInput;
+    static string dlgPrompt = "";
     static IntPtr hFbMail, hFbMsg;
     static bool dlgWarn; // mostra o ícone de alerta e destaca o 1º botão em vermelho
     static string dlgMessage = "";
@@ -2350,11 +2451,12 @@ autoexclusao=nunca
         Btn(218, 132, 196, 32, IDC_BK_X, 4);
         Btn(420, 132, 160, 32, IDC_BK_ALL, 4);
         Btn(586, 132, 190, 32, IDC_RESTOREBK, 4);
-        Btn(540, 182, 236, 32, IDC_AUTODEL, 4);
-        Btn(36, 252, 740, 30, IDC_T_DATADIR, 4);
-        Btn(36, 308, 150, 32, IDC_DATADIR, 4);
-        Btn(414, 308, 362, 32, IDC_CONFLICT, 4);
-        Btn(36, 398, 260, 34, IDC_FACTORY, 4);
+        Btn(540, 178, 236, 30, IDC_LIMIT, 4);
+        Btn(540, 214, 236, 30, IDC_AUTODEL, 4);
+        Btn(36, 278, 740, 30, IDC_T_DATADIR, 4);
+        Btn(36, 334, 150, 32, IDC_DATADIR, 4);
+        Btn(414, 334, 362, 32, IDC_CONFLICT, 4);
+        Btn(36, 422, 260, 34, IDC_FACTORY, 4);
 
         // desfazer / refazer nos cartões de edição
         Btn(734, 82, 28, 24, IDC_UNDO, 0);
@@ -2697,7 +2799,7 @@ autoexclusao=nunca
             "•  \"Apagar Fixados\" (botão vermelho): apaga todos os clips fixados, depois de confirmar.\n" +
             "•  \"Salvar\" num clip que já existe pergunta: gravar a alteração nele ou salvar como um clip novo (o original fica como estava).\n" +
             "•  Desfazer / refazer: botões ↶ ↷ no canto do cartão, ou Ctrl+Z / Ctrl+Y. Vale para editar, mover, fixar, excluir, limpar, restaurar e também para as ações feitas na lista rápida (Ctrl+0). Dentro do texto em edição, o Ctrl+Z desfaz a digitação palavra por palavra, quantas vezes quiser.\n" +
-            "•  Formatação: ao copiar um texto com negrito, cores ou links (Word, navegador, e-mail), o clip guarda a formatação e cola formatado. Para colar só o texto, use o botão direito › \"Colar sem formatação\" na lista rápida. Editar um clip formatado o transforma em texto sem formatação.\n\n" +
+            "•  Formatação: ao copiar um texto com negrito, cores ou links (Word, navegador, e-mail), o clip guarda a formatação e cola formatado. Para colar só o texto: Ctrl+Shift+1 a 9, Shift+clique (ou Shift+número) na lista rápida, ou botão direito › \"Colar sem formatação\". Editar um clip formatado o transforma em texto sem formatação.\n\n" +
             "ATALHOS POR EXPANSÃO (textos prontos chamados por uma abreviação)\n" +
             "•  Cadastre na tela \"Atalhos por Expansão\": um atalho curto (ex.: bn1) e o texto correspondente (ex.: Boa noite. Tudo bem?).\n" +
             "•  Em qualquer programa, digite o atalho: aparece uma sugestão com o texto. Aperte Tab para inserir — o atalho digitado é apagado e o texto entra no lugar.\n" +
@@ -2720,7 +2822,8 @@ autoexclusao=nunca
             "DADOS E BACKUP (Configurações › Dados e backup)\n" +
             "•  Backup: gera listas em texto (.txt), uma de clips e outra de expansões. O \"Backup completo\" gera as duas e também um arquivo de configurações (.ini: teclas, tema, cor e opções). Entre um item e outro ficam duas linhas em branco. Nos clips, a 1ª linha é o número (★ = fixado); nas expansões, a 1ª linha é o atalho (com - na frente = não fixado) e depois vem o texto. Imagens vão numa pasta \"... - imagens\" ao lado.\n" +
             "•  Restaurar backup: escolha um ou mais arquivos (pode marcar os 3 do backup completo juntos). Nas listas, dá para substituir a atual ou adicionar os itens a ela; as configurações são aplicadas depois de confirmar.\n" +
-            "•  Apagar sozinho os clips não fixados: nunca, depois de 30 min, 1 h, 2 h, 24 h ou toda meia-noite. Os fixados nunca são apagados.\n" +
+            "•  Tamanho máximo da lista: 20, 50, 100 (padrão), 200 ou sem limite. Imagens: no máximo 100. Na lista rápida, o que não couber rola com a roda do mouse.\n" +
+            "•  Limpeza automática dos não fixados: itens com mais de 30 min / 1 h / 2 h / 24 h, ou zerar a lista todo dia num horário, toda semana (dia e horário) ou a cada X horas. Se o computador estiver desligado no horário, a limpeza acontece quando o programa abrir. Os fixados nunca são apagados.\n" +
             "•  Pasta de dados: guarda clips e atalhos numa pasta da rede, OneDrive ou Google Drive, para usar os mesmos em vários computadores. Se o arquivo mudar em outro computador, o ClipAtalho pode carregar a versão nova sozinho, perguntar na hora ou perguntar ao fechar; a versão que não ficar é guardada como cópia na pasta.\n" +
             "•  Restaurar padrão de fábrica: apaga tudo deste computador (com sugestão de backup antes). Se houver pasta de dados, ela só é desligada, sem ser apagada.\n\n" +
             "SUGESTÕES E RECLAMAÇÕES\n" +
@@ -2880,6 +2983,7 @@ autoexclusao=nunca
                     PAINTSTRUCT ps;
                     IntPtr hdc = BeginPaint(hwnd, out ps);
                     if (dlgFeedback) { PaintFeedback(hdc); EndPaint(hwnd, ref ps); return IntPtr.Zero; }
+                    if (dlgInput) { PaintInput(hdc); EndPaint(hwnd, ref ps); return IntPtr.Zero; }
                     DrawTextAt(hdc, dlgTitle, hHeadFont, C_TEXT, Px(22), Px(12), Px(458), Px(42), 0x8024);
                     int tl = Px(22);
                     if (dlgWarn)
@@ -2935,7 +3039,7 @@ autoexclusao=nunca
         if (text.Length == 0) return;
         PushClipUndo();
         int at = editClip == null ? -1 : clips.IndexOf(editClip);
-        if (clips.Count >= MAX_CLIPS)
+        if (clips.Count >= MaxClips)
         {
             int last = clips.FindLastIndex(delegate(Clip c) { return !c.Pinned; });
             if (last < 0) { Info("A lista está cheia de clips fixados. Exclua ou solte algum."); return; }
@@ -3083,7 +3187,7 @@ autoexclusao=nunca
         List<Clip> later = clips.FindAll(delegate(Clip c) { return c.Copied && !c.Pinned && !s.Refs.Contains(c) && c.Added >= s.Time; });
         int at = res.FindIndex(delegate(Clip c) { return !c.Pinned; });
         res.InsertRange(at < 0 ? res.Count : at, later);
-        while (res.Count > MAX_CLIPS)
+        while (res.Count > MaxClips)
         {
             int last = res.FindLastIndex(delegate(Clip c) { return !c.Pinned; });
             if (last < 0) break;
@@ -3583,7 +3687,7 @@ autoexclusao=nunca
         foreach (Clip c in got)
         {
             if (res.Exists(delegate(Clip o) { return Same(o, c); })) { skipped++; continue; }
-            if (res.Count >= MAX_CLIPS)
+            if (res.Count >= MaxClips)
             {
                 int last = res.FindLastIndex(delegate(Clip o) { return !o.Pinned && !got.Contains(o); });
                 if (last < 0) { skipped++; continue; }
@@ -3597,7 +3701,7 @@ autoexclusao=nunca
         SaveClips();
         RefreshList();
         RefreshPopupList();
-        Info((got.Count - skipped) + " clip(s) restaurado(s)." + (skipped > 0 ? "\n" + skipped + " não entraram (repetidos ou lista cheia: máximo " + MAX_CLIPS + ")." : ""));
+        Info((got.Count - skipped) + " clip(s) restaurado(s)." + (skipped > 0 ? "\n" + skipped + " não entraram (repetidos ou lista cheia: máximo " + MaxClips + ")." : ""));
     }
 
     static void RestoreX(List<KeyValuePair<string, string>> items, bool replace)
@@ -3627,15 +3731,87 @@ autoexclusao=nunca
     static void AutoDelMenu()
     {
         List<MI> mi = new List<MI>();
-        for (int i = 0; i < AutoDelNames.Length; i++) { MI m = Item(1 + i, AutoDelNames[i]); m.Check = i == AutoDelIndex(); mi.Add(m); }
+        MI none = Item(1, "Nunca"); none.Check = autoMode == 0; mi.Add(none);
+        for (int i = 0; i < AutoDelNames.Length; i++) { MI am = Item(10 + i, AutoDelNames[i]); am.Check = autoMode == 1 && cfgAutoDel == AutoDelMinutes[i]; mi.Add(am); }
+        mi.Add(Sep());
+        MI d = Item(2, "Zerar todo dia em um horário…"); d.Check = autoMode == 2; mi.Add(d);
+        MI w = Item(3, "Zerar toda semana…"); w.Check = autoMode == 3; mi.Add(w);
+        MI e = Item(4, "Zerar a cada X horas…"); e.Check = autoMode == 4; mi.Add(e);
         RECT r;
         GetWindowRect(GetDlgItem(hwndMgr, IDC_AUTODEL), out r);
         int cmd = ShowMenu(mi, r.Left, r.Bottom + Px(4), hwndMgr);
         if (cmd < 1) return;
-        SetIniValue("geral", "autoexclusao", AutoDelKeys[cmd - 1]);
+        string val = null, hm = autoHour.ToString("00") + ":" + autoMinute.ToString("00");
+        int h, m;
+        if (cmd == 1) val = "nunca";
+        else if (cmd >= 10) val = AutoDelKeys[cmd - 10];
+        else if (cmd == 2)
+        {
+            string t = InputDialog("Zerar todo dia", "Horário em que a lista é zerada (HH:MM):", autoMode >= 2 ? hm : "18:00");
+            if (t == null) return;
+            if (!ParseHM(t, out h, out m)) { Info("Horário inválido. Use o formato HH:MM, por exemplo 18:00."); return; }
+            val = "diario " + h.ToString("00") + ":" + m.ToString("00");
+        }
+        else if (cmd == 3)
+        {
+            List<MI> days = new List<MI>();
+            for (int i = 0; i < 7; i++) { MI x = Item(1 + i, "Toda " + WeekNames[i]); x.Check = autoMode == 3 && autoWeekDay == i; days.Add(x); }
+            int dsel = ShowMenu(days, r.Left, r.Bottom + Px(4), hwndMgr);
+            if (dsel < 1) return;
+            string t = InputDialog("Zerar toda " + WeekNames[dsel - 1], "Horário em que a lista é zerada (HH:MM):", autoMode >= 2 ? hm : "18:00");
+            if (t == null) return;
+            if (!ParseHM(t, out h, out m)) { Info("Horário inválido. Use o formato HH:MM, por exemplo 08:00."); return; }
+            val = "semanal " + (dsel - 1) + " " + h.ToString("00") + ":" + m.ToString("00");
+        }
+        else if (cmd == 4)
+        {
+            string t = InputDialog("Zerar a cada X horas", "De quantas em quantas horas a lista é zerada (1 a 720)?", autoMode == 4 ? autoEvery.ToString() : "24");
+            if (t == null) return;
+            int n;
+            if (!int.TryParse(t.Trim(), out n) || n < 1 || n > 720) { Info("Digite um número de horas entre 1 e 720."); return; }
+            val = "cada " + n;
+        }
+        if (val == null) return;
+        SetIniValue("geral", "autoexclusao", val);
+        if (cmd >= 2 && cmd <= 4) MarkCleaned(DateTime.Now); // conta a partir de agora
         LoadConfig();
-        autoDelDay = DateTime.Today;
         RunAutoDelete();
+        RepaintAll();
+    }
+
+    static void LimitMenu()
+    {
+        List<MI> mi = new List<MI>();
+        for (int i = 0; i < LimitValues.Length; i++)
+        {
+            MI m = Item(1 + i, LimitValues[i] == 0 ? "Sem limite" : LimitValues[i] + " itens");
+            m.Check = cfgLimit == LimitValues[i];
+            mi.Add(m);
+        }
+        RECT r;
+        GetWindowRect(GetDlgItem(hwndMgr, IDC_LIMIT), out r);
+        int cmd = ShowMenu(mi, r.Left, r.Bottom + Px(4), hwndMgr);
+        if (cmd < 1) return;
+        int v = LimitValues[cmd - 1];
+        if (v > 0 && clips.Count > v)
+        {
+            int pinned = clips.FindAll(delegate(Clip c) { return c.Pinned; }).Count;
+            dlgEscResult = 2;
+            dlgPrimary = 1;
+            if (AskDialog("Tamanho da lista", "A lista tem " + clips.Count + " itens. Ao reduzir para " + v + ", os não fixados mais antigos saem" +
+                (pinned > v ? " (os " + pinned + " fixados ficam todos)." : ".") + "\nDá para desfazer com Ctrl+Z.", "Reduzir", "Cancelar", null) != 1) return;
+            PushClipUndo();
+            while (clips.Count > v)
+            {
+                int last = clips.FindLastIndex(delegate(Clip c) { return !c.Pinned; });
+                if (last < 0) break;
+                clips.RemoveAt(last);
+            }
+            SaveClips();
+            RefreshList();
+        }
+        SetIniValue("geral", "limite", v.ToString());
+        LoadConfig();
         RepaintAll();
     }
 
@@ -3873,6 +4049,68 @@ autoexclusao=nunca
         hDlg = IntPtr.Zero;
         if (hwndMgr != IntPtr.Zero) SetForegroundWindow(hwndMgr);
         if (result == 1) SendFeedback(fbComplaint ? "Reclamação" : "Sugestão", text, mail);
+    }
+
+    static void PaintInput(IntPtr hdc)
+    {
+        int w = Px(420);
+        DrawTextAt(hdc, dlgTitle, hHeadFont, C_TEXT, Px(22), Px(12), w - Px(22), Px(42), 0x8024);
+        DrawTextAt(hdc, dlgPrompt, hUiFont, C_GRAY, Px(22), Px(52), w - Px(22), Px(72), 0x8024);
+        RoundRect(hdc, Px(18), Px(78), Px(384), Px(32), Px(8), A_WHITE, A_BTNBORDER);
+        RoundRect(hdc, 0, 0, w, Px(176), Px(WIN_R), 0, A_BTNBORDER);
+    }
+
+    // Janela pequena para digitar um valor (horário, número). Devolve null se cancelada.
+    static string InputDialog(string title, string prompt, string value)
+    {
+        dlgLabels = new string[] { "OK", "Cancelar", null };
+        dlgMessage = "";
+        dlgTitle = title;
+        dlgPrompt = prompt;
+        dlgResult = 0;
+        dlgInput = true;
+        dlgPrimary = 1;
+        int w = Px(420), h = Px(176);
+        RECT o;
+        int x = (GetSystemMetrics(0) - w) / 2, y = (GetSystemMetrics(1) - h) / 2;
+        if (hwndMgr != IntPtr.Zero && GetWindowRect(hwndMgr, out o)) { x = o.Left + (o.Right - o.Left - w) / 2; y = o.Top + (o.Bottom - o.Top - h) / 2; }
+        hDlg = CreateWindowExW(0x10000 | 0x80000, "ClipAtalhoDialog", title, 0x80000000 | 0x02000000, x, y, w, h, hwndMgr, IntPtr.Zero, hInst, IntPtr.Zero);
+        if (hDlg == IntPtr.Zero) { dlgInput = false; return null; }
+        IntPtr me = hDlg;
+        RoundWindow(me, w, h);
+        AttachShade(me, NewShadeWindow(false));
+        IntPtr ed = Child(me, "EDIT", value, 0x10000 | 0x80, 28, 85, 364, 20, IDC_IN_EDIT, -2);
+        Child(me, "BUTTON", "", 0x10000 | 0xB, 196, 124, 100, 36, IDC_DLG + 1, -2);
+        Child(me, "BUTTON", "", 0x10000 | 0xB, 304, 124, 98, 36, IDC_DLG + 2, -2);
+        if (hwndMgr != IntPtr.Zero) EnableWindow(hwndMgr, false);
+        FadeWindow(me, true);
+        ShowWindow(me, 5);
+        PlaceShade(me);
+        SetForegroundWindow(me);
+        SetFocus(ed);
+        SendMessageW(ed, 0x00B1, IntPtr.Zero, (IntPtr)(-1)); // seleciona tudo
+        MSG msg;
+        while (dlgResult == 0)
+        {
+            int g = GetMessageW(out msg, IntPtr.Zero, 0, 0);
+            if (g <= 0) { PostQuitMessage(0); dlgResult = 2; break; }
+            if (msg.message == 0x0100 && msg.wParam.ToInt32() == 0x0D) { dlgResult = 1; break; } // Enter = OK
+            if (IsDialogMessageW(me, ref msg)) continue;
+            TranslateMessage(ref msg);
+            DispatchMessageW(ref msg);
+        }
+        string text = CtlText(ed);
+        int result = dlgResult;
+        dlgInput = false;
+        dlgPrimary = 3;
+        if (hwndMgr != IntPtr.Zero) EnableWindow(hwndMgr, true);
+        FadeOutAndWait(me);
+        DropShade(me);
+        winAlpha.Remove(me);
+        DestroyWindow(me);
+        hDlg = IntPtr.Zero;
+        if (hwndMgr != IntPtr.Zero) SetForegroundWindow(hwndMgr);
+        return result == 1 ? text : null;
     }
 
     static string Enc(string s) { return Uri.EscapeDataString(s ?? ""); }
@@ -4391,32 +4629,39 @@ autoexclusao=nunca
         return CallWindowProcW(oldXListProc, hwnd, m, wParam, lParam);
     }
 
-    static int AutoDelIndex() { int i = Array.IndexOf(AutoDelMinutes, cfgAutoDel); return i < 0 ? 0 : i; }
-
-    // Apaga sozinho os clips não fixados, conforme o tempo escolhido em Configurações.
+    // Limpeza automática dos não fixados (os fixados nunca saem). Se o PC estava desligado no horário, limpa ao abrir.
     static void RunAutoDelete()
     {
-        if (cfgAutoDel == 0) return;
+        if (autoMode == 0) return;
         DateTime now = DateTime.Now;
         int removed;
-        if (cfgAutoDel < 0)
-        {
-            if (now.Date == autoDelDay) return;
-            autoDelDay = now.Date;
-            PushClipUndo();
-            removed = clips.RemoveAll(delegate(Clip c) { return !c.Pinned; });
-        }
-        else
+        if (autoMode == 1)
         {
             if (!clips.Exists(delegate(Clip c) { return !c.Pinned && (now - c.Added).TotalMinutes >= cfgAutoDel; })) return;
             PushClipUndo();
             removed = clips.RemoveAll(delegate(Clip c) { return !c.Pinned && (now - c.Added).TotalMinutes >= cfgAutoDel; });
         }
+        else
+        {
+            if (lastClean == DateTime.MinValue) { MarkCleaned(now); return; } // começa a contar a partir de agora
+            bool due = autoMode == 4 ? (now - lastClean).TotalHours >= autoEvery : lastClean < LastScheduled(now);
+            if (!due) return;
+            MarkCleaned(now);
+            if (!clips.Exists(delegate(Clip c) { return !c.Pinned; })) return;
+            PushClipUndo();
+            removed = clips.RemoveAll(delegate(Clip c) { return !c.Pinned; });
+        }
         if (removed == 0) return;
-        Log("Autoexclusão: " + removed + " clip(s) não fixado(s) apagado(s)");
+        Log("Limpeza automática: " + removed + " clip(s) não fixado(s) apagado(s)");
         SaveClips();
         RefreshList();
         RefreshPopupList();
+    }
+
+    static void MarkCleaned(DateTime t)
+    {
+        lastClean = t;
+        SetIniValue("geral", "ultima_limpeza", t.ToString("yyyyMMddHHmm"));
     }
 
     static void ClearUnpinned()
@@ -4470,7 +4715,8 @@ autoexclusao=nunca
             case IDC_BK_X: return "Backup das expansões";
             case IDC_BK_ALL: return "Backup completo";
             case IDC_RESTOREBK: return "Restaurar backup…";
-            case IDC_AUTODEL: return AutoDelNames[AutoDelIndex()] + "   ▼";
+            case IDC_AUTODEL: return AutoDelLabel() + "   ▼";
+            case IDC_LIMIT: return (cfgLimit <= 0 ? "Sem limite" : cfgLimit + " itens") + "   ▼";
             case IDC_T_DATADIR: return "Usar uma pasta de dados (rede, OneDrive, Google Drive…) — os mesmos clips e atalhos em vários computadores";
             case IDC_DATADIR: return "Escolher pasta…";
             case IDC_CONFLICT: return ConflictNames[conflictMode] + "   ▼";
@@ -4708,18 +4954,18 @@ autoexclusao=nunca
             DrawTextAt(hdc, "Backup", hUiBold, C_TEXT, Px(36), Px(88), Px(780), Px(108), 0x24);
             DrawTextAt(hdc, "Listas em texto (.txt) que dá para abrir, editar e restaurar. O backup completo leva também as configurações (.ini).",
                 hUiFont, C_GRAY, Px(36), Px(108), Px(780), Px(128), 0x8024);
-            DrawTextAt(hdc, "Apagar sozinho os clips não fixados", hUiBold, C_TEXT, Px(36), Px(178), Px(530), Px(198), 0x24);
-            DrawTextAt(hdc, "Os fixados (★) nunca são apagados.", hUiFont, C_GRAY, Px(36), Px(198), Px(530), Px(218), 0x8024);
-            DrawTextAt(hdc, "Pasta de dados", hUiBold, C_TEXT, Px(36), Px(230), Px(780), Px(250), 0x24);
+            DrawTextAt(hdc, "Tamanho máximo da lista", hUiBold, C_TEXT, Px(36), Px(178), Px(530), Px(208), 0x24);
+            DrawTextAt(hdc, "Limpeza automática  ·  os fixados (★) nunca saem", hUiBold, C_TEXT, Px(36), Px(214), Px(530), Px(244), 0x24);
+            DrawTextAt(hdc, "Pasta de dados", hUiBold, C_TEXT, Px(36), Px(256), Px(780), Px(276), 0x24);
             string where = !dataOn ? "Desligada: os dados ficam na pasta do programa (" + exeDir + ")"
                 : (dataMissing ? "INDISPONÍVEL agora: " + dataDir + "  (usando a pasta do programa)" : "Pasta atual: " + dataDir);
-            DrawTextAt(hdc, where, hSmallFont, dataMissing ? C_RED : C_GRAY, Px(36), Px(284), Px(780), Px(304), 0x8024);
-            DrawTextAt(hdc, "Se mudar em outro computador:", hUiFont, C_GRAY, Px(196), Px(308), Px(410), Px(340), 0x8024);
-            DrawTextAt(hdc, "Padrão de fábrica", hUiBold, C_TEXT, Px(36), Px(354), Px(780), Px(374), 0x24);
+            DrawTextAt(hdc, where, hSmallFont, dataMissing ? C_RED : C_GRAY, Px(36), Px(310), Px(780), Px(330), 0x8024);
+            DrawTextAt(hdc, "Se mudar em outro computador:", hUiFont, C_GRAY, Px(196), Px(334), Px(410), Px(366), 0x8024);
+            DrawTextAt(hdc, "Padrão de fábrica", hUiBold, C_TEXT, Px(36), Px(380), Px(780), Px(400), 0x24);
             DrawTextAt(hdc, "Apaga clips, atalhos e configurações deste computador e volta tudo como na primeira instalação.",
-                hUiFont, C_GRAY, Px(36), Px(374), Px(780), Px(394), 0x8024);
+                hUiFont, C_GRAY, Px(36), Px(398), Px(780), Px(418), 0x8024);
             DrawTextAt(hdc, "Na pasta de dados, os computadores que apontarem para ela usam os mesmos clips e atalhos. A escolha da pasta vale só para este computador.",
-                hSmallFont, C_GRAY, Px(36), Px(446), Px(780), Px(500), 0x10);
+                hSmallFont, C_GRAY, Px(36), Px(468), Px(780), Px(512), 0x10);
         }
         else
         {
@@ -5043,7 +5289,7 @@ autoexclusao=nunca
             case IDC_NEW:
                 if (!ResolveDirty(false)) return;
                 idx = mgrSel == null ? -1 : clips.IndexOf(mgrSel);
-                if (clips.Count >= MAX_CLIPS)
+                if (clips.Count >= MaxClips)
                 {
                     int last = clips.FindLastIndex(delegate(Clip c) { return !c.Pinned; });
                     if (last < 0)
@@ -5178,6 +5424,7 @@ autoexclusao=nunca
             case IDC_BK_ALL: DoBackup(true, true, true); return;
             case IDC_RESTOREBK: DoRestore(); return;
             case IDC_AUTODEL: AutoDelMenu(); return;
+            case IDC_LIMIT: LimitMenu(); return;
             case IDC_T_DATADIR: ToggleDataFolder(); return;
             case IDC_DATADIR: ChooseDataFolder(); return;
             case IDC_CONFLICT: ConflictMenu(); return;
@@ -5420,7 +5667,8 @@ autoexclusao=nunca
         FillRect(mem, ref pr, hWhiteBrush);
         for (int i = 0; i < popLines.Count; i++)
         {
-            int top = Px(8) + i * Px(POP_ROW), bottom = top + Px(POP_ROW);
+            if (!PopRowVisible(i)) continue;
+            int top = PopRowTop(i), bottom = top + Px(POP_ROW);
             if (bottom + Px(2) < pr.Top || top - Px(2) > pr.Bottom) continue; // só as linhas que mudaram
             if (i == 0)
             {
@@ -5472,8 +5720,16 @@ autoexclusao=nunca
         }
         if (popItemDrag && popDropLine >= 1) // onde o item arrastado vai entrar
         {
-            int ly = Px(8) + popDropLine * Px(POP_ROW) - Px(1);
+            int ly = PopRowTop(popDropLine) - Px(1);
             RoundRect(mem, Px(12), ly, w - Px(24), Px(3), Px(2), A_ACCENT, 0);
+        }
+        int total = popLines.Count - 1, vis = PopVisible();
+        if (popNumbered && total > vis) // barrinha de rolagem
+        {
+            int trackTop = Px(8 + POP_ROW), track = vis * Px(POP_ROW);
+            int th = Math.Max(Px(24), track * vis / total);
+            int ty = trackTop + (track - th) * popScroll / Math.Max(1, total - vis);
+            RoundRect(mem, w - Px(8), ty, Px(4), th, Px(2), A_BTNBORDER, 0);
         }
         // cabeçalho: "Limpar" e X
         int hy = Px(10), hs = Px(26);
@@ -5514,12 +5770,12 @@ autoexclusao=nunca
                 return true;
             }
             int n = -1;
-            if (vk >= '1' && vk <= '9' && !shift) n = vk - '1';
+            if (vk >= '1' && vk <= '9') n = vk - '1'; // com Shift: cola sem formatação
             else if (vk >= 0x61 && vk <= 0x69) n = vk - 0x61;
             PostMessageW(hwndMain, WM_HIDEPOPUP, IntPtr.Zero, IntPtr.Zero);
             if (n >= 0 && !ctrlAltWin)
             {
-                if (n < clips.Count) PasteClip(clips[n]);
+                if (n < clips.Count) PasteClip(clips[n], shift);
                 return true;
             }
             return false;
@@ -5617,7 +5873,9 @@ autoexclusao=nunca
                 case WM_HOTKEY:
                     if (paused) return IntPtr.Zero;
                     int id = wParam.ToInt32();
-                    if (id > 10) id -= 10; // teclado numérico
+                    bool plainKey = id > 20; // com Shift: sem formatação
+                    if (id > 20) id -= 20;
+                    else if (id > 10) id -= 10; // teclado numérico
                     Log("Atalho recebido: " + cfgModsLabel + "+" + (id == ID_LIST ? 0 : id) + " (clips na lista: " + clips.Count + ")");
                     if (id == ID_LIST)
                     {
@@ -5626,7 +5884,7 @@ autoexclusao=nunca
                     else if (id >= 1 && id <= 9)
                     {
                         HidePopup();
-                        if (id - 1 < clips.Count) PasteClip(clips[id - 1]);
+                        if (id - 1 < clips.Count) PasteClip(clips[id - 1], plainKey);
                     }
                     return IntPtr.Zero;
                 case WM_TIMER:
@@ -5671,6 +5929,9 @@ autoexclusao=nunca
                     return IntPtr.Zero;
                 case WM_FEEDBACKDONE:
                     FeedbackDone(wParam != IntPtr.Zero);
+                    return IntPtr.Zero;
+                case WM_POPSCROLL:
+                    if (popMode == MODE_HISTORY) PopupScroll(wParam.ToInt32());
                     return IntPtr.Zero;
             }
             if (msgTaskbar != 0 && m == msgTaskbar) // Explorer reiniciou: recria o ícone
@@ -5745,8 +6006,8 @@ autoexclusao=nunca
                         if (!popItemDrag && Math.Abs(my - popPressY) > Px(6)) popItemDrag = true;
                         if (popItemDrag)
                         {
-                            int dl = (my - Px(8) + Px(POP_ROW) / 2) / Px(POP_ROW);
-                            dl = Math.Max(1, Math.Min(popLines.Count, dl));
+                            int dl = (my - Px(8) + Px(POP_ROW) / 2) / Px(POP_ROW) + popScroll;
+                            dl = Math.Max(1 + popScroll, Math.Min(Math.Min(popLines.Count, popScroll + PopVisible() + 1), dl));
                             if (dl != popDropLine) { popDropLine = dl; InvalidateRect(hwnd, IntPtr.Zero, false); }
                             return IntPtr.Zero;
                         }
@@ -5821,7 +6082,7 @@ autoexclusao=nunca
                         if (line - 1 < popClips.Count)
                         {
                             Log("Lista rápida: clique no item " + line);
-                            PasteClip(popClips[line - 1]);
+                            PasteClip(popClips[line - 1], KeyDown(VK_SHIFT)); // Shift+clique: sem formatação
                         }
                     }
                     else if (mode == MODE_SUGGEST)
@@ -5963,7 +6224,10 @@ autoexclusao=nunca
     {
         int y = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
         if (y < Px(8)) return -1;
-        int line = (y - Px(8)) / Px(POP_ROW);
+        int v = (y - Px(8)) / Px(POP_ROW);
+        if (v == 0) return 0;
+        if (v > PopVisible()) return -1;
+        int line = v + popScroll;
         return line < popLines.Count ? line : -1;
     }
 

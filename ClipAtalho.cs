@@ -1,5 +1,5 @@
 ﻿// ClipAtalho - gerenciador de área de transferência portátil + expansão de texto.
-// Versão 1.3.0 16-11-2026. Compilar: dê dois cliques no "Compilar ClipAtalho.bat" (usa o csc.exe que já vem no Windows).
+// Versão 1.4.0 17-11-2026. Compilar: dê dois cliques no "Compilar ClipAtalho.bat" (usa o csc.exe que já vem no Windows).
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -340,13 +340,13 @@ static class ClipAtalho
     const uint WM_DESTROY = 0x0002, WM_PAINT = 0x000F, WM_MOUSEACTIVATE = 0x0021, WM_KEYDOWN = 0x0100,
         WM_SYSKEYDOWN = 0x0104, WM_TIMER = 0x0113, WM_LBUTTONUP = 0x0202, WM_RBUTTONUP = 0x0205,
         WM_HOTKEY = 0x0312, WM_COMMAND = 0x0111, WM_CLOSE = 0x0010, WM_CLIPBOARDUPDATE = 0x031D,
-        WM_TRAY = 0x8001, WM_SHOWPOPUP = 0x8002, WM_HIDEPOPUP = 0x8003, WM_FEEDBACKDONE = 0x8010, WM_POPSCROLL = 0x8011, WM_CLOUDDONE = 0x8012, WM_CLOUDCHECK = 0x8013, WM_CLOUDAUTH = 0x8014;
+        WM_TRAY = 0x8001, WM_SHOWPOPUP = 0x8002, WM_HIDEPOPUP = 0x8003, WM_FEEDBACKDONE = 0x8010, WM_POPSCROLL = 0x8011, WM_CLOUDDONE = 0x8012, WM_CLOUDCHECK = 0x8013, WM_CLOUDAUTH = 0x8014, WM_POPFILTER = 0x8015, WM_CLOUDLIVE = 0x8016;
     const int TIMER_WAITMODS = 1, TIMER_RESTORE = 2, TIMER_POPUP = 3, TIMER_CONFIG = 4, TIMER_FADE = 5,
-        TIMER_WAVE = 6, TIMER_CLIPREAD = 7, TIMER_ARM = 8, TIMER_CLOUDASK = 9;
+        TIMER_WAVE = 6, TIMER_CLIPREAD = 7, TIMER_ARM = 8, TIMER_CLOUDASK = 9, TIMER_LIVE = 10;
     const uint CF_UNICODETEXT = 13;
     const int VK_BACK = 0x08, VK_TAB = 0x09, VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12,
         VK_ESCAPE = 0x1B, VK_LWIN = 0x5B, VK_RWIN = 0x5C;
-    const int MODE_NONE = 0, MODE_SUGGEST = 1, MODE_HISTORY = 2;
+    const int MODE_NONE = 0, MODE_SUGGEST = 1, MODE_HISTORY = 2, MODE_NOTICE = 3;
     const int ID_LIST = 10, MAX_IMAGES = 100;
     static int cfgLimit = 100; // 0 = sem limite
     static int MaxClips { get { return cfgLimit <= 0 ? int.MaxValue : cfgLimit; } }
@@ -362,6 +362,7 @@ static class ClipAtalho
         public IntPtr Thumb;          // miniatura leve, gerada uma vez (listas)
         public DateTime Added = DateTime.Now; // quando entrou na lista (autoexclusão)
         public bool Copied;                   // entrou por Ctrl+C (não por edição)
+        public bool Empty;                    // vaga livre: posição fixada guardada, sem conteúdo
         public byte[] Html, Rtf;              // formatação original (negrito, cores, links), quando houver
         public bool HasFormat { get { return Html != null || Rtf != null; } }
         public int W, H;
@@ -735,11 +736,13 @@ atalhos_data=sim
         label = string.Join("+", names.ToArray());
     }
 
+    // Atalho: até 32 caracteres; aceita letras (com acento), números, símbolos e espaço no meio.
+    // Não pode: "=" (separa atalho e texto no .ini), quebra de linha, começar com "-", ";" ou "[", nem espaço nas pontas.
     static bool ValidAbbr(string s)
     {
-        if (s.Length == 0 || s.Length > 32) return false;
-        foreach (char c in s)
-            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) return false;
+        if (s.Length == 0 || s.Length > 32 || s.Trim() != s) return false;
+        if (s[0] == '-' || s[0] == ';' || s[0] == '[') return false;
+        foreach (char c in s) if (c == '=' || char.IsControl(c)) return false;
         return true;
     }
 
@@ -923,6 +926,9 @@ atalhos_data=sim
         cloudMode = 0;
         cloudCheck = true;
         cloudLastSync = "";
+        backupDir = "";
+        cloudLive = false;
+        cloudLiveImg = false;
         string t = ReadTextFile(LocalIniPath);
         if (t == null) return;
         foreach (string raw in t.Split('\n'))
@@ -941,6 +947,9 @@ atalhos_data=sim
             else if (k == "nuvem_aviso") cloudCheck = v.ToLowerInvariant() != "nao";
             else if (k == "nuvem_sinc") cloudLastSync = v;
             else if (k == "onedrive_client_id") cloudClientOverride = v;
+            else if (k == "pasta_backups") backupDir = v;
+            else if (k == "nuvem_tempo_real") cloudLive = v.ToLowerInvariant() == "sim";
+            else if (k == "nuvem_tempo_real_imagens") cloudLiveImg = v.ToLowerInvariant() == "sim";
         }
         if (dataDir.Length == 0) dataOn = false;
     }
@@ -959,6 +968,8 @@ atalhos_data=sim
                     "\r\nnuvem=" + (cloudProv == 1 ? "onedrive" : cloudProv == 2 ? "pasta" : "") + "\r\nnuvem_pasta=" + cloudDir +
                     "\r\n; acesso ao OneDrive deste computador (criptografado pelo Windows; só funciona neste usuário)\r\nnuvem_token=" + tok +
                     "\r\nnuvem_modo=" + CloudModeKeys[cloudMode] + "\r\nnuvem_aviso=" + (cloudCheck ? "sim" : "nao") + "\r\nnuvem_sinc=" + cloudLastSync +
+                    "\r\nnuvem_tempo_real=" + (cloudLive ? "sim" : "nao") + "\r\nnuvem_tempo_real_imagens=" + (cloudLiveImg ? "sim" : "nao") +
+                    "\r\npasta_backups=" + backupDir +
                     (cloudClientOverride.Length > 0 ? "\r\nonedrive_client_id=" + cloudClientOverride : "") + "\r\n", new UTF8Encoding(true));
             }
             catch (Exception e) { Log("FALHA ao gravar ClipAtalho.local.ini: " + e.Message); }
@@ -1141,6 +1152,7 @@ atalhos_data=sim
         {
             if (!c.HasFormat && cand.HasFormat) { c.Html = cand.Html; c.Rtf = cand.Rtf; SaveClips(); }
             DropImage(cand);
+            LiveSend(c);
             return;
         }
         Clip front = null;
@@ -1178,6 +1190,7 @@ atalhos_data=sim
         ReleaseUnusedImages();
         if (cfgSaveAll) SaveClips();
         RefreshList();
+        LiveSend(front); // tempo real: manda para o outro computador
     }
 
     // ------------------------------------------------------------------ clips de imagem
@@ -1606,6 +1619,7 @@ atalhos_data=sim
                     used.Add(c.ImgFile.ToLowerInvariant());
                     continue;
                 }
+                if (c.Empty) { sb.Append("vaga=\r\n"); continue; } // posição livre guardada
                 if (c.Text.Length == 0) continue;
                 sb.Append(c.Pinned ? "fixo=" : "normal=").Append(EscClip(c.Text)).Append("\r\n");
                 if (c.Html != null) sb.Append("html=").Append(Convert.ToBase64String(c.Html)).Append("\r\n"); // formatação do clip acima
@@ -1654,6 +1668,7 @@ atalhos_data=sim
                     catch { }
                     continue;
                 }
+                if (key == "vaga") { Clip vg = new Clip("", true); vg.Empty = true; clips.Add(vg); continue; }
                 if (key != "fixo" && key != "normal") continue;
                 clips.Add(new Clip(UnescClip(line.Substring(eq + 1)), key == "fixo"));
             }
@@ -1858,7 +1873,7 @@ atalhos_data=sim
     // plain = "Colar sem formatação": só o texto, sem negrito, cores ou links.
     static void PasteClip(Clip c, bool plain)
     {
-        if (c == null) return;
+        if (c == null || c.Empty || (!c.IsImage && c.Text.Length == 0)) { ShowNotice("Você ainda não salvou nada nesta posição."); return; }
         if (c.IsImage)
         {
             if (c.Image == IntPtr.Zero) return;
@@ -2216,7 +2231,7 @@ atalhos_data=sim
     static RECT popDragRect;
     static float[] popScale = new float[0]; // 0 = tamanho normal, 1 = ampliado (efeito jukebox)
     static IntPtr[] popFonts = new IntPtr[4];
-    static IntPtr popMem, popMemBmp, popMemOld, hIconFont, hIconBig;
+    static IntPtr popMem, popMemBmp, popMemOld, hIconFont, hIconBig, hSearch, hXSearch;
     static int popMemW, popMemH;
     const int POP_ROW = 30;
 
@@ -2251,13 +2266,16 @@ atalhos_data=sim
         }
         else
         {
-            popLines.Add("Clique cola  ·  botão direito: mais opções  ·  arraste os itens");
-            for (int i = 0; i < clips.Count; i++) // todos os clips, fixados ou não
+            string pf = Fold(popFilter);
+            popLines.Add(pf.Length > 0 ? "🔍 " + popFilter + "   ·   Esc limpa a busca" : "Clique cola  ·  digite para pesquisar  ·  botão direito: opções");
+            for (int i = 0; i < clips.Count; i++) // todos os clips, fixados ou não (ou só os que batem com a busca)
             {
                 Clip c = clips[i];
+                if (!ClipMatches(c, pf)) continue;
                 popClips.Add(c);
-                popLines.Add((c.Pinned ? "★ " : "") + (c.IsImage ? "Imagem  ·  " + c.W + " × " + c.H + " px" : Preview(c.Text, 140)));
+                popLines.Add(c.Empty ? "(posição livre)" : (c.Pinned ? "★ " : "") + (c.IsImage ? "Imagem  ·  " + c.W + " × " + c.H + " px" : Preview(c.Text, 140)));
             }
+            if (popClips.Count == 0) popLines.Add("Nada encontrado para \"" + popFilter + "\"");
             popNumbered = true;
         }
         popScale = new float[popLines.Count];
@@ -2267,6 +2285,7 @@ atalhos_data=sim
     static void ShowHistory()
     {
         popScroll = 0;
+        popFilter = "";
         BuildHistoryLines();
         popMode = MODE_HISTORY;
         ShowPopup(20000);
@@ -2408,10 +2427,11 @@ atalhos_data=sim
         IDC_UNDO = 192, IDC_REDO = 193, IDC_XUNDO = 194, IDC_XREDO = 195, IDC_CUNDO = 196, IDC_CREDO = 197, IDC_LIMIT = 198, IDC_IN_EDIT = 214,
         IDC_SEG3 = 220, IDC_CLOUDPROV = 221, IDC_CLOUDCONN = 222, IDC_CLOUDUP = 223, IDC_CLOUDDOWN = 224, IDC_CLOUDMODE = 225,
         IDC_T_CLOUDCHECK = 226, IDC_DATEFMT = 227, IDC_YEARFMT = 228, IDC_T_DATEKEY = 229, IDC_HOURFMT = 230,
+        IDC_SEARCH = 231, IDC_XSEARCH = 232, IDC_TOEXP = 233, IDC_GOCLOUD = 234, IDC_T_CLOUDLIVE = 235, IDC_T_CLOUDLIVEIMG = 236,
         IDC_FB_SUG = 210, IDC_FB_REC = 211, IDC_FB_MAIL = 212, IDC_FB_MSG = 213;
     const string RUNKEY = @"Software\Microsoft\Windows\CurrentVersion\Run";
     const string INSTAGRAM = "https://www.instagram.com/talespsg";
-    const string VERSION = "1.3.0 16-11-2026";
+    const string VERSION = "1.4.0 17-11-2026";
     static readonly string[] PageTitles = { "Seus clips", "Atalhos por Expansão", "Configurações", "Ajuda", "Configurações", "Configurações" };
     static readonly string[] ModNames = { "Ctrl", "Shift", "Alt", "Win" };
     static readonly uint[] ModBits = { 2, 4, 1, 8 };
@@ -2426,6 +2446,7 @@ atalhos_data=sim
     static int dlgResult, dlgEscResult = 2, dlgPrimary = 3;
     static bool dlgFeedback, fbComplaint, dlgInput;
     static int dlgExtra;
+    static string dlgRedNote = ""; // aviso em vermelho abaixo da mensagem
     static string dlgPrompt = "";
     static IntPtr hFbMail, hFbMsg;
     static bool dlgWarn; // mostra o ícone de alerta e destaca o 1º botão em vermelho
@@ -2476,7 +2497,8 @@ atalhos_data=sim
         Btn(772, 14, 32, 32, IDC_CLOSE, -1); // fechar (X)
 
         // página 0: clips
-        hList = Child(hwndMgr, "LISTBOX", "", 0x00200000 | 0x10000 | 0x1 | 0x10 | 0x40 | 0x100, 16, 78, 336, 400, IDC_LIST, 0);
+        hSearch = Child(hwndMgr, "EDIT", "", 0x10000 | 0x80, 46, 84, 300, 20, IDC_SEARCH, 0);
+        hList = Child(hwndMgr, "LISTBOX", "", 0x00200000 | 0x10000 | 0x1 | 0x10 | 0x40 | 0x100, 16, 114, 336, 364, IDC_LIST, 0);
         SendMessageW(hList, 0x01A0, IntPtr.Zero, (IntPtr)Px(58)); // LB_SETITEMHEIGHT
         listProcRef = ListProc; // intercepta o mouse da lista (arrastar e botão direito)
         IntPtr fp = Marshal.GetFunctionPointerForDelegate(listProcRef);
@@ -2492,7 +2514,8 @@ atalhos_data=sim
         Btn(706, 486, 98, 36, IDC_DEL, 0);
 
         // página 1: atalhos por expansão
-        hXList = Child(hwndMgr, "LISTBOX", "", 0x00200000 | 0x10000 | 0x1 | 0x10 | 0x40 | 0x100, 16, 114, 336, 364, IDC_XLIST, 1);
+        hXSearch = Child(hwndMgr, "EDIT", "", 0x10000 | 0x80, 46, 120, 300, 20, IDC_XSEARCH, 1);
+        hXList = Child(hwndMgr, "LISTBOX", "", 0x00200000 | 0x10000 | 0x1 | 0x10 | 0x40 | 0x100, 16, 150, 336, 328, IDC_XLIST, 1);
         Btn(16, 78, 226, 30, IDC_XSORT, 1);
         Btn(248, 78, 104, 30, IDC_HOURFMT, 1);
         SendMessageW(hXList, 0x01A0, IntPtr.Zero, (IntPtr)Px(58)); // LB_SETITEMHEIGHT
@@ -2536,8 +2559,10 @@ atalhos_data=sim
         Btn(424, 134, 220, 32, IDC_CLOUDCONN, 5);
         Btn(36, 204, 362, 52, IDC_CLOUDUP, 5);
         Btn(412, 204, 364, 52, IDC_CLOUDDOWN, 5);
-        Btn(36, 330, 480, 32, IDC_CLOUDMODE, 5);
-        Btn(36, 370, 740, 30, IDC_T_CLOUDCHECK, 5);
+        Btn(36, 326, 480, 32, IDC_CLOUDMODE, 5);
+        Btn(36, 362, 740, 30, IDC_T_CLOUDCHECK, 5);
+        Btn(36, 396, 740, 30, IDC_T_CLOUDLIVE, 5);
+        Btn(76, 428, 700, 30, IDC_T_CLOUDLIVEIMG, 5);
 
         // página 4: dados e backup (sub-página de Configurações)
         Btn(36, 132, 176, 32, IDC_BK_CLIPS, 4);
@@ -2546,6 +2571,7 @@ atalhos_data=sim
         Btn(586, 132, 190, 32, IDC_RESTOREBK, 4);
         Btn(540, 178, 236, 30, IDC_LIMIT, 4);
         Btn(540, 214, 236, 30, IDC_AUTODEL, 4);
+        Btn(200, 254, 576, 22, IDC_GOCLOUD, 4);
         Btn(36, 278, 740, 30, IDC_T_DATADIR, 4);
         Btn(36, 334, 150, 32, IDC_DATADIR, 4);
         Btn(414, 334, 362, 32, IDC_CONFLICT, 4);
@@ -2858,6 +2884,35 @@ atalhos_data=sim
         if (p == 2 || p == 4) startupOn = StartupEnabled();
         if (p == 3) SetWindowTextW(hHelp, HelpText());
         UpdateEditVisibility();
+        UpdateSearchBoxes();
+        RepaintAll();
+    }
+
+    // O campo de busca aparece ao clicar na caixa "Pesquisar…" (ou Ctrl+F); vazio e sem foco, some e mostra a dica.
+    static void UpdateSearchBoxes()
+    {
+        if (hwndMgr == IntPtr.Zero) return;
+        IntPtr f = GetFocus();
+        ShowWindow(hSearch, page == 0 && (clipFilter.Length > 0 || f == hSearch) ? 5 : 0);
+        ShowWindow(hXSearch, page == 1 && (xFilter.Length > 0 || f == hXSearch) ? 5 : 0);
+    }
+
+    static void OpenSearch()
+    {
+        IntPtr h = page == 0 ? hSearch : page == 1 ? hXSearch : IntPtr.Zero;
+        if (h == IntPtr.Zero) return;
+        ShowWindow(h, 5);
+        SetFocus(h);
+        SendMessageW(h, 0x00B1, IntPtr.Zero, (IntPtr)(-1));
+    }
+
+    static void ClearSearch()
+    {
+        IntPtr h = GetFocus();
+        if (h != hSearch && h != hXSearch) return;
+        SetWindowTextW(h, "");
+        SetFocus(h == hSearch ? hList : hXList);
+        UpdateSearchBoxes();
         RepaintAll();
     }
 
@@ -2914,7 +2969,9 @@ atalhos_data=sim
             "•  Errou num ajuste? Ctrl+Z (ou os botões ↶ ↷ no alto) desfaz também as mudanças nas configurações.\n\n" +
             "DADOS E BACKUP (Configurações › Dados e backup)\n" +
             "•  Backup: gera listas em texto (.txt), uma de clips e outra de expansões. O \"Backup completo\" gera as duas e também um arquivo de configurações (.ini: teclas, tema, cor e opções). Entre um item e outro ficam duas linhas em branco. Nos clips, a 1ª linha é o número (★ = fixado); nas expansões, a 1ª linha é o atalho (com - na frente = não fixado) e depois vem o texto. Imagens vão numa pasta \"... - imagens\" ao lado.\n" +
-            "•  Restaurar backup: escolha um ou mais arquivos (pode marcar os 3 do backup completo juntos). Nas listas, dá para substituir a atual ou adicionar os itens a ela; as configurações são aplicadas depois de confirmar.\n" +
+            "•  Os backups vão para a pasta \"Backups do ClipAtalho\" (com o ícone do programa), criada na primeira vez no lugar que você escolher; dá para escolher outra quando quiser.\n" +
+            "•  Backup automático: todo dia o programa guarda uma cópia na pasta \"Backups automáticos\", ao lado dele, mantendo os últimos 7 dias. Se apagar algo sem querer hoje, a cópia de ontem ainda tem.\n" +
+            "•  Restaurar backup: aponte o arquivo ou deixe o ClipAtalho procurar numa pasta ou disco. Escolha um ou mais arquivos (pode marcar os 3 do backup completo juntos). Nas listas, dá para substituir a atual ou adicionar os itens a ela; as configurações são aplicadas depois de confirmar.\n" +
             "•  Tamanho máximo da lista: 20, 50, 100 (padrão), 200 ou sem limite. Imagens: no máximo 100. Na lista rápida, o que não couber rola com a roda do mouse.\n" +
             "•  Limpeza automática dos não fixados: itens com mais de 30 min / 1 h / 2 h / 24 h, ou zerar a lista todo dia num horário, toda semana (dia e horário) ou a cada X horas. Se o computador estiver desligado no horário, a limpeza acontece quando o programa abrir. Os fixados nunca são apagados.\n" +
             "•  Pasta de dados: guarda clips e atalhos numa pasta da rede, OneDrive ou Google Drive, para usar os mesmos em vários computadores. Se o arquivo mudar em outro computador, o ClipAtalho pode carregar a versão nova sozinho, perguntar na hora ou perguntar ao fechar; a versão que não ficar é guardada como cópia na pasta.\n" +
@@ -2923,6 +2980,14 @@ atalhos_data=sim
             "•  Leve clips, imagens, atalhos e configurações para outro computador: \"Enviar para a nuvem\" num computador e \"Baixar da nuvem\" no outro. Antes de substituir, o programa mostra a data, a hora e o computador do backup que já está lá.\n" +
             "•  Onde guardar: OneDrive, direto pela internet, sem instalar nada (o login é feito uma vez, na página da Microsoft, e o ClipAtalho só enxerga a própria pasta Aplicativos › ClipAtalho), ou uma pasta do Google Drive, Dropbox, rede ou pendrive.\n" +
             "•  Depois de alterar algo, o programa pergunta se deseja enviar (ou envia sozinho, se preferir). Ao abrir, avisa se outro computador enviou uma versão mais nova.\n\n" +
+            "•  Tempo real (opcional): o que você copiar num computador aparece no outro em poucos segundos, pronto para colar. Imagens só se você ligar essa opção.\n\n" +
+            "PESQUISAR\n" +
+            "•  Nas telas Clips e Atalhos por Expansão: clique em \"Pesquisar…\" (ou Ctrl+F) e digite; a lista vai afunilando. Vale o texto e, nas expansões, também o atalho. Esc limpa.\n" +
+            "•  No Ctrl+0: é só começar a digitar com a lista aberta. Backspace apaga, Esc limpa a busca (e, de novo, fecha).\n\n" +
+            "POSIÇÕES E FIXADOS\n" +
+            "•  Ao fixar um clip, ele sobe e fica logo abaixo do último fixado.\n" +
+            "•  Ao excluir um fixado que tem itens abaixo, você escolhe: \"Puxar para cima\" (os de baixo mudam de número) ou \"Manter posições\" (a posição fica como vaga livre, para você não precisar decorar tudo de novo). Para preencher a vaga, selecione-a e digite o texto.\n" +
+            "•  Converter em expansão: botão direito num clip (na lista ou no Ctrl+0) › \"Converter em expansão\". Digite o atalho e salve; depois você escolhe se o clip continua na lista.\n\n" +
             "DATA E HORA\n" +
             "•  Atalhos prontos: hj1 (data), hr1 (hora), dh1 (data e hora) e ext1 (data por extenso). Em qualquer atalho seu dá para usar {data}, {hora}, {datahora} e {extenso}: na hora de colar, viram a data e a hora do momento.\n" +
             "•  Ctrl+Shift+D cola a data de hoje. Formato da data e do ano: Configurações › Geral. Hora em 24h ou AM/PM: botão ao lado de \"Reorganizar\" na tela Atalhos por Expansão.\n\n" +
@@ -2989,6 +3054,7 @@ atalhos_data=sim
         dlgResult = 0;
         int estLines = 0;
         foreach (string ml in message.Split('\n')) estLines += Math.Max(1, (ml.Length + 61) / 62);
+        if (dlgRedNote.Length > 0) estLines += 1 + (dlgRedNote.Length + 61) / 62;
         dlgExtra = Math.Max(0, estLines - 4) * 20;
         const uint style = 0x80000000 | 0x02000000; // sem barra de título: o programa desenha tudo
         int w = Px(480), h = Px(196 + dlgExtra);
@@ -3095,6 +3161,14 @@ atalhos_data=sim
                         tl = Px(68);
                     }
                     DrawTextAt(hdc, dlgMessage.Replace("\n", "\r\n"), hUiFont, C_TEXT, tl, Px(50), Px(458), Px(134 + dlgExtra), 0x10); // quebra de linha
+                    if (dlgRedNote.Length > 0) // aviso em vermelho, logo abaixo do texto
+                    {
+                        RECT mr = new RECT();
+                        mr.Left = tl; mr.Top = Px(50); mr.Right = Px(458); mr.Bottom = Px(134 + dlgExtra);
+                        SelectObject(hdc, hUiFont);
+                        DrawTextW(hdc, dlgMessage.Replace("\n", "\r\n"), -1, ref mr, 0x10 | 0x400 | 0x800); // DT_CALCRECT
+                        DrawTextAt(hdc, dlgRedNote, hUiBold, C_RED, tl, mr.Bottom + Px(6), Px(458), Px(136 + dlgExtra), 0x10);
+                    }
                     RoundRect(hdc, 0, 0, Px(480), Px(196 + dlgExtra), Px(WIN_R), 0, A_BTNBORDER);
                     EndPaint(hwnd, ref ps);
                     return IntPtr.Zero;
@@ -3178,7 +3252,7 @@ atalhos_data=sim
             clips.Add(editClip);
             mgrSel = editClip;
         }
-        else editClip.Text = text;
+        else { editClip.Text = text; editClip.Empty = false; } // preencher uma vaga livre
         SetDirty(false);
         SaveClips();
         RefreshList();
@@ -3190,9 +3264,10 @@ atalhos_data=sim
         if (!editDirty && !expDirty) return true;
         bool exp = !editDirty;
         string what = exp ? "atalho" : "clip";
-        int r = AskDialog("Edição não salva",
-            closing ? "Deseja sair sem salvar a edição feita no " + what + "?" : "A edição feita neste " + what + " não foi salva. Deseja descartá-la?",
-            "Sim", "Não", closing ? "Salvar e fechar" : "Salvar");
+        dlgEscResult = 2;
+        dlgPrimary = 3;
+        int r = AskDialog("Edição não salva", "A edição feita neste " + what + " não foi salva. Deseja descartá-la?",
+            "Descartar", "Voltar ao texto", "Salvar");
         if (r == 3)
         {
             if (exp) return SaveX(false);
@@ -3204,6 +3279,7 @@ atalhos_data=sim
             if (exp)
             {
                 xNew = false;
+                convertFrom = null;
                 RefreshX(true); // recarrega o texto original
             }
             else
@@ -3223,6 +3299,7 @@ atalhos_data=sim
         public List<string> Texts = new List<string>();
         public List<bool> Pins = new List<bool>();
         public List<byte[]> Htmls = new List<byte[]>(), Rtfs = new List<byte[]>();
+        public List<bool> Empties = new List<bool>();
         public DateTime Time = DateTime.Now;
     }
     class XSnap
@@ -3239,7 +3316,7 @@ atalhos_data=sim
     static ClipSnap TakeClipSnap()
     {
         ClipSnap s = new ClipSnap();
-        foreach (Clip c in clips) { s.Refs.Add(c); s.Texts.Add(c.Text); s.Pins.Add(c.Pinned); s.Htmls.Add(c.Html); s.Rtfs.Add(c.Rtf); }
+        foreach (Clip c in clips) { s.Refs.Add(c); s.Texts.Add(c.Text); s.Pins.Add(c.Pinned); s.Htmls.Add(c.Html); s.Rtfs.Add(c.Rtf); s.Empties.Add(c.Empty); }
         return s;
     }
 
@@ -3286,6 +3363,7 @@ atalhos_data=sim
             c.Pinned = s.Pins[i];
             c.Html = s.Htmls[i];
             c.Rtf = s.Rtfs[i];
+            c.Empty = s.Empties[i];
             res.Add(c);
         }
         List<Clip> later = clips.FindAll(delegate(Clip c) { return c.Copied && !c.Pinned && !s.Refs.Contains(c) && c.Added >= s.Time; });
@@ -3573,6 +3651,7 @@ atalhos_data=sim
                 catch { continue; }
                 body = "[Imagem] " + c.ImgFile;
             }
+            else if (c.Empty) body = "[Vaga]"; // posição livre guardada
             else
             {
                 if (c.Text.Length == 0) continue;
@@ -3617,10 +3696,79 @@ atalhos_data=sim
 
     static bool DoBackup(bool doClips, bool doX) { return DoBackup(doClips, doX, false); }
 
+    static readonly string ICO_B64 =
+        "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EnqcD+p9oA//eZwP/nueEf91mQf/n7hR/87bpv/O26b/z9uo/87bp//O26f/ydee/46sM/94nA3/fZ8U/3yeE/98nhL/ep0P/3qdD/95nA/+faAP/3qcD+p/mw4Sf5sOEnqcD+p9oA//eZwP/nqdDv97nhH/b5UA/2iQAP9pkAD/aJAA/2iQAP9okAD/aJAA/22UAP9ylwD/cZYA/3GWAP9zmAP/e50Q/3qdD/95nA/+faAP/3qcD+p/mw4Sf5sOEnqcD+p9oA//eZwP/nueEf91mQb/m7ZL/87bpv/O26b/" +
+        "z9yo/8/cqP/P3Kj/z9yo/87bpv/N2qX/zNqj/83apf+jvFr/dZkG/3ueEf95nA/+faAP/3qcD+p/mw4Sf5sOEnqcD+p9oA//ep0Q/nmcDf9/oRj/+Pnx////////////////////////////////////////////////////////////iakr/3abCP97nRH+faAP/3qcD+p/mw4Sf5sOEnqcD+p9oA//epwP/nqdD/95nA7/3OW////////////////////////////////////////////////////////o7tb/gKEa/3icDP96nRD+faAP/3qcD+p/mw4Sf5sOEnqcD+p9oA//eZwP/nudEP93mwv/f6EY/5m0R/+atEj/mrVJ/5q1Sf+atUn/mrVJ/5q1Sf+atUn/mrRI/5q1Sf+DpB//d5sJ/3ueEP95nA/+faAP/3qcD+p/mw4Sf5sOEnqcD+p9oA//eZwP/nqdD/96nQ7/dZkG/3ueEv98nhL/fJ4S/3yeEv98nhL/fJ4S/3yeEv98nhL/fJ4S/3yeEv91mQb/eZwN/3qdD/95nA/+faAP/3qcD+p/mw4Sf5sOEnqcD+p9oA//eZwP/nudEP93mwn/xtWY//X47f/1+O3/9vjv//b47//2+O//9vjv//b47//2+O//9fjt//b47//T3q//e54Q/3qdDv96nA/+faAP/3qcD+p/mw4Sf5sOEnqcD+p9oA//ep0Q/nmcDP9/oRn//f78////////////////////////////////////////////////////////////i6kt/3aaB/97nRH+faAP/3qcD+p/mw4SeJYPEXqcD+p9oA//eZwP/nueEf91mQf/qsFm/9vkvv/b5b7/3OXA/9zlwP/c5cD/3OXA/9zlwP/c5cD/2+W+/9zlwP+1yHn/d5sJ/3udEP95nA/+faAP/3qcD+p4lg8R//8AAXqdDs5/oxD+eZ0P/XqdD/96nRD/c5gD/3SZBP90mQX/dJkF/3SZBf90mQX/dJkF/3SZBf90mQX/dJkF/3SZBf9zmAL/ep0P/3qdD/95nQ/9f6MQ/nqdDs7//wABAAAAAHqdDnuFqxD/eZwP+XqdD/96nQ//fJ4S/3ueEf97nhH/e54R/3ueEf97nhH/e54R/3ueEf97nhH/e54R/3ueEf98nhL/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I/+FpSP/haUj/4WlI/+FpSP/haUj/4WlI/+EpSL/g6Qf/4OkH/+DpB//g6Qf/4GiG/90mQT/ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/97nhL/dJgF/6zCav/x9OX/9fjs//b47v/2+O//9vjv//b47//2+O//9vjv//b47//2+O//9vjv//b47//1+O3/8/bp/7nLgf91mQb/e54R/3qdD/96nQ//eZwP/n2gD/96nA/qf5sOEn+bDhJ6nA/qfaAP" +
+        "/3mcD/56nQ//e50Q/3mcDP+AoRn/+Prz///////+//7//////////////////////////////////////////////////////////////////////4uqLf92mgf/e54R/3qdD/95nA/+faAP/3qcD+p/mw4Sf5sOEnqcD+p9oA//eZwP/nqdD/96nQ//ep0P/3qdD//m7NH////////////////////////////////////////////////////////////////////////////z9un/gaIc/3icDP97nRD/ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/97nhH/dpoI/4qpLf/G1Zn/zdql/83bpf/O26b/ztum/87bpv/O26b/ztum/87bpv/O26b/ztum/83bpv/N2qX/ydee/5KvO/91mQb/e54R/3qdD/96nQ//eZwP/n2gD/96nA/qf5sOEn+bDhJ6nA/qfaAP/3mcD/56nQ//ep0P/3qdD/97nhD/eJsL/2+VAP9vlQD/b5UA/2+VAP9vlQD/b5UA/2+VAP9vlQD/b5UA/2+VAP9vlQD/b5UA/2+VAP9vlQD/d5sJ/3ueEf96nQ//ep0P/3qdD/95nA/+faAP/3qcD+p/mw4Sf5sOEnqcD+p9oA//eZwP/nqdD/96nQ//ep0P/3qdEP91mQb/gaIc/4WlI/+FpSL/haUj/4WlI/+FpSP/haUj/4WlI/+FpSP/haUj/4WlI/+FpSP/haUj/4OjH/91mgb/ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/97nhL/dJgF/6zCav/x9OX/9fjs//b47v/2+O//9vjv//b47//2+O//9vjv//b47//2+O//9vjv//b47//1+O3/8/bp/7nLgf91mQb/e54R/3qdD/96nQ//eZwP/n2gD/96nA/qf5sOEn+bDhJ6nA/qfaAP/3mcD/56nQ//e50Q/3mcDP+AoRn/+Prz///////+//7//////////////////////////////////////////////////////////////////////4uqLf92mgf/e54R/3qdD/95nA/+faAP/3qcD+p/mw4Sf5sOEnqcD+p9oA//eZwP/nqdD/96nQ//ep0P/3qdD//m7NH////////////////////////////////////////////////////////////////////////////z9un/gaIc/3icDP97nRD/ep0P/3mcD/59oA//epwP6n+bDhJ4kw0TeZwP632gD/95nA/+ep0P/3qdD/97nhH/dpoI/4qpLf/G1Zj/zNqk/83apP/N2qX/zdql/83apf/N2qX/zdql/83apf/N2qX/zdql/83apf/M2qP/yded/5KvO/91mQb/e54R/3qdD/96nQ//" +
+        "eZwP/n2gD/95nA/reJMNE2aZAAV5nQ/afqIQ/3mdD/16nQ//ep0P/3qdD/97nhD/d5oJ/3GWAP9xlwD/cZYA/3GWAP9xlgD/cZYA/3GWAP9xlgD/cZYA/3GWAP9xlgD/cZYA/3GXAP9xlgD/dZoH/3ueEf96nQ//ep0P/3qdD/95nQ/9fqIQ/3mdD9pmmQAFAAAAAHqcDquCpxD+eZ0P+3qdD/96nQ//ep0P/3qdD/97nhH/fJ8T/3yeE/98nhP/fJ4T/3yeE/98nhP/fJ4T/3yeE/98nhP/fJ4T/3yeE/98nhP/fJ4T/3yfE/97nhH/ep0P/3qdD/96nQ//ep0P/3mdD/uCpxD+epwOqwAAAAAAAAAAepwNS4OoEP95nA/7ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//eZwP+4OnEP94mw1KAAAAAH9/AAJ/fwACepwPuoOpEP95nA/5ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/mEqRD/eZsPuAAAAAB/fwACf38AAv//AAF/ogsWfZ8P1IOpEP95nA/7eZwP/HmdD/15nA/+eZwP/nmcD/55nA/+eZwP/nmcD/55nA/+eZwP/nmcD/55nA/+eZwP/nmcD/55nA/+eZwP/nmcD/55nA/+eZ0P/XmcD/x5nA/7hKoQ/32fD9R/ogsW//8AAX9/AAIAAAAAf38AAgAAAABukAsXfaEPt4OoEP+CpxD/fqIQ/32gD/99oA//faAP/32gD/99oA//faAP/32gD/99oA//faAP/32gD/99oA//faAP/32gD/99oA//faAP/32gD/9+ohD/gqcQ/4KnEP99oQ+xbpALFwAAAAB/fwACAAAAAAAAAAAAAAAAf38AAgAAAAAAAAAAf6ENTHygD6h7ng/Xep0P6XqdD+l6nA/qepwP6nqcD+p6nA/qepwP6nqcD+p6nA/qepwP6nqcD+p6nA/qepwP6nqcD+p6nQ/pep0P6XueD9d8oQ+kfKENTAAAAAAAAAAA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D/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/97nhH/ep0P/3aaB/91mgf/dZoH/3WaBv91mgb/dZoG/3WaBv91mgb/dZoG/3WaB/91mgb/d5sK/3yeEv96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/yApRD/ep0OxgAAAACLohcLep0O436hD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3ueEf92mgj/eZwM" +
+        "/42rMf+OrDT/jqw0/46sNP+OrDT/jqw0/46sNP+OrDT/jqw0/46sM/+PrDT/haUi/3KXAf96nRD/ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/5+oQ//ep0O44uiFwuGoQ0TeZ0P632gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//e54R/3aaCP+KqSz/4OjH//39+//+/v3////+//////////////////////////////////7//v/+/v3/9vju/7jLf/91mQb/e54R/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//eZ0P64ahDRN/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//e54R/3WZB//c5cD///////7+/f////////////////////////////////////////////////////////////////+btUv/dJgE/3yeEv96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/97nRD/eJsK/4SlIP/5+vT//f37//7//v////7////+/////v////7////+/////v////7////+/////v////7//Pz5//39+//A0Y3/b5UA/3yfE/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//e50Q/3ebCv/k683///////z9+v/+/v3//v79//7+/f/+/v3//v79//7+/f/+/v3//v79//7+/f/+/v3//v79//////+iu1j/c5gC/3yeEv96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//e54S/3WZBv+TsD3/7fHe/////////////////////////////////////////////////////////////v79/8fWmf92mgj/e50Q/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//" +
+        "ep0P/3qdD/96nQ//ep0P/3ueEf91mQX/gKEZ/5q1Sf+ctkz/nLZN/5y2Tf+ctk3/nLZN/5y2Tf+ctk3/nLZN/5y2TP+ctk3/kK03/3SYBP96nQ7/ep0Q/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/97nhH/eZwN/3SYBP90mAP/dJgD/3OYA/9zmAP/c5gD/3OYA/9zmAP/c5gD/3SYA/90mAP/dpoH/3yeEv97nhH/e50Q/3udEP97nRD/e50Q/3udEP97nRD/ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/97nhD/fJ4S/3mdDv95nA7/eZwO/3mcDv95nA7/eZwO/3mcDv95nA7/eZwO/3mcDv95nA7/eZwN/3ibC/94mwv/eJsL/3ibC/94mwv/eJsL/3ibC/94mwv/e54Q/3ueEf96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3ueEP93mwr/dJkE/4KjHf+DpB//g6Qf/4OkH/+DpB//g6Qf/4OkH/+DpB//g6Qf/4OkH/+DpB//g6Qf/4OkH/+DpB//g6Qf/4OkH/+DpB//g6Qf/4OkH/+Dox7/dpoI/3aaCP97nhH/ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//e50Q/3ebCv+Cox//0t6t//T36//1+O7/9vjv//b47//2+O//9vjv//b47//2+O//9vjv//b47//2+O//9vjv//b47//2+O//9vjv//b47//2+O//9vjv//X47v/19+z/2eO7/4qpLP92mgj/e54R/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//e54R/3OYBP/U37D//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+PqzP93mwv/ep0Q/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/" +
+        "mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/97nRD/eJsL/4OkH//4+vP//f37//3+/f/+//7//v/+//7//v/+//7//v/+//7//v/+//7//v/+//7//v/+//7//v/+//7//v/+//7//v/+//7//v/+//7//v/+//7//v/+//7//f77//////+PrTX/dZoG/3ueEf96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mdDv/q79n///////z9+f/9/vz//f77//3++//9/vv//f77//3++//9/vv//f77//3++//9/vv//f77//3++//9/vv//f77//3++//9/vv//f77//3+/P/8/fr///////f57/+Boxz/eJwL/3udEP96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//fJ4S/3OYBP+dt0//9/nw////////////////////////////////////////////////////////////////////////////////////////////////////////////+/z4/6vBZ/9zlwL/fJ4S/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3ueEf90mQT/iagq/6rAZf+rwWj/rMJp/6zCaf+swmn/rMJp/6zCaf+swmn/rMJp/6zCaf+swmn/rMJp/6zCaf+swmn/rMJp/6zCaf+swmn/rMJp/6vCaP+rwWf/j6w0/3SYBP97nhH/ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/97nhH/d5sJ/3GXAP9xlwD/cZcA/3GXAP9xlwD/cZcA/3GXAP9xlwD/cZcA/3GXAP9xlwD/cZcA/3GXAP9xlwD/cZcA/3GXAP9xlwD/cZcA/3GXAP9xlwD/dpoH/3ueEv96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nRD/fZ8U/3yeEv98nhL/fJ4S/3yeEv98nhL/fJ4S/3yeEv98nhL/fJ4S/3yeEv98nhL/fJ4S/3yeEv98nhL/fJ4S/3yeEv98nhL/fJ4S/3yeEv98nhL/fZ8U/3ueEP96nQ//ep0P/3qdD/96nQ//ep0P/3qd" +
+        "D/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3udEP95nA3/cpcB/3mdDv96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//c5gC/3ibC/97nhD/ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0Q/3mcDP98nxT/wtKR/+ju1v/q79n/6vDa/+vw2v/r8Nr/6/Da/+vw2v/r8Nr/6/Da/+vw2v/r8Nr/6/Da/+vw2v/r8Nr/6/Da/+vw2v/r8Nr/6vDa/+rw2f/p79f/ytif/4KjHv93mwr/e50Q/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//fJ4S/3KXAv/K2J///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9rju/91mgf/e54R/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/97nRD/eJsL/4KjHf/3+fH//f37//3+/P/+/v3//v79//7+/f/+/v3//v79//7+/f/+/v3//v79//7+/f/+/v3//v79//7+/f/+/v3//v79//7+/f/+/v3//v79//7+/f/+/v3//f77//////+NqzL/dZoG/3ueEf96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//epwO/3yeEv/v8+L///////v9+f/9/fv//f37//39+//9/fv//f37//39+//9/fv//f37//39+//9/fv//f37//39+//9/fv//f37//39+//9/fv//f37//39+//8/fr////+//r79v+FpSP/d5sK/3udEP96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhJ/mw4SepwP6n2gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//fJ4S/3KXAv+ov2P////+////////////////////////////////////////////////////////////////////////////////////////////////////////////////" +
+        "/7fKff9ylwL/fJ4S/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//epwP6n+bDhKGoQ0Tep0P632gD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3ueEP90mQT/lbFA/7rMg/+8zob/vM6H/7zOh/+8zof/vM6H/7zOh/+8zof/vM6H/7zOh/+8zof/vM6H/7zOh/+8zof/vM6H/7zOh/+8zof/vM6H/7zOhv+7zYX/nLZM/3WZBv96nRD/ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/59oA//ep0P64ahDROLohcLeZ0O436hD/95nA/+ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/97nhH/dZkF/3CWAP9wlgD/cJYA/3CWAP9wlgD/cJYA/3CWAP9wlgD/cJYA/3CWAP9wlgD/cJYA/3CWAP9wlgD/cJYA/3CWAP9wlgD/cJYA/3CWAP9wlgD/dJgD/3ueEf96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mcD/5+oQ//eZ0O44uiFwsAAAAAeZ0Ox4CkEP96nQ/8ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//e54R/3yfE/98nxP/fJ8T/3yfE/98nxP/fJ8T/3yfE/98nxP/fJ8T/3yfE/98nxP/fJ8T/3yfE/98nxP/fJ8T/3yfE/98nxP/fJ8T/3yfE/98nxP/e54S/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/yApBD/eZ0OxwAAAAAAAAAAepwPloOoEP55nQ/7ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3mdD/uDqBD+epwPlgAAAAAAAAAAeZwPQYClEP94nA/9ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3icD/2ApRD/eZwPQQAAAAB/fwACf38AAnibDs9/pBD+epwP/HqdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//" +
+        "ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//eZwP/ICkEP94mw7Pf38AAn9/AAKqqgADAAAAAHudD0SBphD/eZ0P+3qdD/56nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ/+ep0P+4ClEP97ng9CAAAAAKqqAAMAAAAAqqoAAwAAAAB5mw6PhawQ/3mcD/l6nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/95nA/5hasQ/3maDosAAAAAVaoAAwAAAAAAAAAAAAAAAaqqAAN/fwACep0Pp4WrEP95nA/8epwP/HqdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//ep0P/3qdD/96nQ//eZwP/HqcD/yFqxD/ep0PpwD/AAGqqgADAAAAAQAAAAAAAAAAAAAAAAD/AAH//wABAAAAAXueDo6ApRD/f6QQ/3mcD/15nQ/7eZwP/XmcD/55nA/+eZwP/nmcD/55nA/+eZwP/nmcD/55nA/+eZwP/nmcD/55nA/+eZwP/nmcD/55nA/+eZwP/nmcD/55nA/+eZwP/nmcD/55nA/+eZwP/nmcD/55nA/+eZwP/nmcD/55nA/+epwP/HmcD/t5nA/9f6QQ/4CkEP96nQ6LAAAAAX9/AAIA/wABAAAAAAAAAAAAAAAAAAAAAAAAAAAA/wAB//8AAQAAAAB4mw1KfqEPyIClEP+DqBD/gKQQ/32hD/99oA//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";
+
+    static string backupDir = "";
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern void SHChangeNotify(int ev, uint flags, string item1, IntPtr item2);
+
+    // Dá à pasta o ícone do ClipAtalho (desktop.ini + ícone escondido dentro dela).
+    static void SetFolderIcon(string dir)
+    {
+        try
+        {
+            string ico = Path.Combine(dir, "ClipAtalho.ico"), ini = Path.Combine(dir, "desktop.ini");
+            foreach (string f in new string[] { ico, ini }) if (File.Exists(f)) File.SetAttributes(f, FileAttributes.Normal);
+            File.WriteAllBytes(ico, Convert.FromBase64String(ICO_B64));
+            File.WriteAllText(ini, "[.ShellClassInfo]\r\nIconResource=ClipAtalho.ico,0\r\nIconFile=ClipAtalho.ico\r\nIconIndex=0\r\nInfoTip=Backups do ClipAtalho\r\n", Encoding.Unicode);
+            File.SetAttributes(ico, FileAttributes.Hidden | FileAttributes.System);
+            File.SetAttributes(ini, FileAttributes.Hidden | FileAttributes.System);
+            File.SetAttributes(dir, File.GetAttributes(dir) | FileAttributes.ReadOnly); // o Windows só lê o desktop.ini assim
+            SHChangeNotify(0x00001000, 0x0005, dir, IntPtr.Zero); // SHCNE_UPDATEDIR
+        }
+        catch (Exception e) { Log("Ícone da pasta de backups: " + e.Message); }
+    }
+
+    // Onde salvar o backup: a pasta "Backups do ClipAtalho" (criada na 1ª vez), ou outra que a pessoa escolher.
+    static string BackupFolder()
+    {
+        if (backupDir.Length > 0 && Directory.Exists(backupDir))
+        {
+            dlgEscResult = 3;
+            dlgPrimary = 1;
+            int r = AskDialog("Backup", "Salvar o backup em:\n" + backupDir, "Salvar aqui", "Escolher outra pasta", "Cancelar");
+            if (r == 1) return backupDir;
+            if (r != 2) return null;
+        }
+        string p = PickFolder("Escolha onde criar a pasta \"Backups do ClipAtalho\" (os próximos backups vão para ela)");
+        if (p == null) return null;
+        string dir = Path.GetFileName(p.TrimEnd('\\')).Equals("Backups do ClipAtalho", StringComparison.OrdinalIgnoreCase) ? p : Path.Combine(p, "Backups do ClipAtalho");
+        try { Directory.CreateDirectory(dir); }
+        catch (Exception e) { Info("Não foi possível criar a pasta de backups:\n" + e.Message); return null; }
+        SetFolderIcon(dir);
+        backupDir = dir;
+        SaveLocal();
+        return dir;
+    }
+
     static bool DoBackup(bool doClips, bool doX, bool doCfg)
     {
         if (!ResolveDirty(false)) return false;
-        string dir = PickFolder("Escolha a pasta onde salvar o backup do ClipAtalho");
+        string dir = BackupFolder();
         if (dir == null) return false;
         string date = DateTime.Now.ToString("dd-MM-yyyy");
         List<string> made = new List<string>();
@@ -3700,11 +3848,142 @@ atalhos_data=sim
     static void DoRestore()
     {
         if (!ResolveDirty(false)) return;
-        foreach (string f in PickBackupFiles())
+        dlgEscResult = 3;
+        dlgPrimary = 2;
+        int r = AskDialog("Restaurar backup", "Como encontrar o backup?\n• Escolher arquivo: você aponta o(s) arquivo(s).\n• Procurar backups: o ClipAtalho procura numa pasta ou num disco inteiro e mostra os que encontrar.",
+            "Escolher arquivo", "Procurar backups", "Cancelar");
+        if (r == 1) RestoreFiles(PickBackupFiles());
+        else if (r == 2) ScanBackups();
+    }
+
+    static void RestoreFiles(List<string> files)
+    {
+        files.Sort(delegate(string x, string y) { return RestoreRank(x).CompareTo(RestoreRank(y)); });
+        foreach (string f in files)
         {
-            if (f.ToLowerInvariant().EndsWith(".ini")) RestoreConfig(f);
+            string n = Path.GetFileName(f).ToLowerInvariant();
+            if (n.StartsWith("backup automático") || n.StartsWith("backup automatico")) RestoreFullIni(f);
+            else if (n.EndsWith(".ini")) RestoreConfig(f);
             else RestoreList(f);
         }
+    }
+
+    static readonly Regex BackupName = new Regex(@"^(ClipAtalho .*? Backup (da Lista de (Clipes|Expansões)|de Configurações) (\d{2}-\d{2}-\d{4})( \(\d+\))?\.(txt|ini)|Backup automático - .+\.ini)$", RegexOptions.IgnoreCase);
+
+    // Procura backups numa pasta ou disco (sem travar a janela) e mostra os encontrados, do mais novo ao mais antigo.
+    static void ScanBackups()
+    {
+        string root = PickFolder("Onde procurar os backups? Pode ser uma pasta ou um disco inteiro (ex.: C:\\ ou um pendrive).");
+        if (root == null) return;
+        List<string> found = new List<string>();
+        string err = RunWorker(delegate
+        {
+            Stack<KeyValuePair<string, int>> st = new Stack<KeyValuePair<string, int>>();
+            st.Push(new KeyValuePair<string, int>(root, 0));
+            while (st.Count > 0 && found.Count < 500)
+            {
+                KeyValuePair<string, int> cur = st.Pop();
+                try
+                {
+                    foreach (string f in Directory.GetFiles(cur.Key)) if (BackupName.IsMatch(Path.GetFileName(f))) found.Add(f);
+                    if (cur.Value >= 10) continue;
+                    foreach (string d in Directory.GetDirectories(cur.Key))
+                    {
+                        string dn = Path.GetFileName(d);
+                        if (dn.StartsWith("$") || dn == "Windows" || dn == "System Volume Information" || dn == "WinSxS") continue;
+                        if ((File.GetAttributes(d) & FileAttributes.ReparsePoint) != 0) continue;
+                        st.Push(new KeyValuePair<string, int>(d, cur.Value + 1));
+                    }
+                }
+                catch { } // pasta sem permissão: pula
+            }
+            return null;
+        }, "Procurando backups em " + root + "…");
+        if (err != null) { Info("Não foi possível procurar: " + err); return; }
+        // agrupa os arquivos de um mesmo backup (mesma pasta e mesma data): o "completo" restaura tudo de uma vez
+        Dictionary<string, List<string>> groups = new Dictionary<string, List<string>>();
+        foreach (string f in found)
+        {
+            Match m = BackupName.Match(Path.GetFileName(f));
+            string key = Path.GetDirectoryName(f) + "|" + (m.Groups[4].Success ? m.Groups[4].Value + m.Groups[5].Value : Path.GetFileName(f));
+            if (!groups.ContainsKey(key)) groups[key] = new List<string>();
+            groups[key].Add(f);
+        }
+        List<List<string>> sets = new List<List<string>>(groups.Values);
+        sets.Sort(delegate(List<string> a, List<string> b) { return NewestTime(b).CompareTo(NewestTime(a)); });
+        if (sets.Count == 0) { Info("Nenhum backup do ClipAtalho encontrado em:\n" + root); return; }
+        List<MI> mi = new List<MI>();
+        for (int i = 0; i < sets.Count && i < 30; i++) mi.Add(Item(1 + i, SetLabel(sets[i])));
+        RECT r;
+        GetWindowRect(GetDlgItem(hwndMgr, IDC_RESTOREBK), out r);
+        int cmd = ShowMenu(mi, r.Left - Px(300), r.Bottom + Px(4), hwndMgr);
+        if (cmd < 1) return;
+        RestoreFiles(new List<string>(sets[cmd - 1]));
+    }
+
+    static DateTime NewestTime(List<string> set)
+    {
+        DateTime t = DateTime.MinValue;
+        foreach (string f in set) { try { DateTime w = File.GetLastWriteTime(f); if (w > t) t = w; } catch { } }
+        return t;
+    }
+
+    static string SetLabel(List<string> set)
+    {
+        string kind;
+        string n0 = Path.GetFileName(set[0]).ToLowerInvariant();
+        if (n0.StartsWith("backup automático")) kind = "Automático (" + Path.GetFileNameWithoutExtension(set[0]).Substring(19) + ")";
+        else if (set.Count >= 3) kind = "Completo";
+        else
+        {
+            List<string> parts = new List<string>();
+            foreach (string f in set)
+            {
+                string n = Path.GetFileName(f).ToLowerInvariant();
+                parts.Add(n.Contains("clipes") ? "clipes" : n.Contains("expans") ? "expansões" : "configurações");
+            }
+            kind = string.Join(" + ", parts.ToArray());
+            kind = char.ToUpper(kind[0]) + kind.Substring(1);
+        }
+        string dir = Path.GetDirectoryName(set[0]);
+        if (dir.Length > 38) dir = "…" + dir.Substring(dir.Length - 37);
+        return NewestTime(set).ToString("dd/MM/yyyy HH:mm") + "  ·  " + kind + "  ·  " + dir;
+    }
+
+    // Backup automático: um por dia da semana, guardando os últimos 7 dias, na pasta do programa.
+    static DateTime autoBackupDay = DateTime.MinValue;
+    static string AutoBackupDir { get { return Path.Combine(exeDir, "Backups automáticos"); } }
+
+    static void AutoDailyBackup()
+    {
+        if (autoBackupDay == DateTime.Today) return;
+        autoBackupDay = DateTime.Today;
+        try
+        {
+            string text = ReadIni();
+            if (text == null || text.Length == 0) return;
+            Directory.CreateDirectory(AutoBackupDir);
+            string f = Path.Combine(AutoBackupDir, "Backup automático - " + WeekNames[(int)DateTime.Today.DayOfWeek] + ".ini");
+            if (File.Exists(f) && File.GetLastWriteTime(f).Date == DateTime.Today) return; // o de hoje já foi feito
+            File.WriteAllText(f, text, new UTF8Encoding(true));
+            Log("Backup automático: " + Path.GetFileName(f));
+        }
+        catch (Exception e) { Log("Backup automático falhou: " + e.Message); }
+    }
+
+    static void RestoreFullIni(string file)
+    {
+        string text = ReadTextFile(file);
+        if (text == null) { Info("Não foi possível ler o arquivo."); return; }
+        dlgEscResult = 2;
+        dlgPrimary = 1;
+        if (AskDialog("Restaurar backup automático", "Restaurar o backup automático de " + File.GetLastWriteTime(file).ToString("dd/MM/yyyy") +
+            " (" + Path.GetFileNameWithoutExtension(file).Substring(19) + ")?\nSubstitui clips, atalhos e configurações deste computador (uma cópia dos atuais fica guardada).",
+            "Restaurar", "Cancelar", null) != 1) return;
+        CopyIniAside("antes de restaurar");
+        WriteIni(text.TrimStart((char)0xFEFF));
+        ReloadAll();
+        Info("Backup automático restaurado.");
     }
 
     // Aplica a seção [geral] do backup de configurações (tema, cor, teclas e opções).
@@ -3786,13 +4065,14 @@ atalhos_data=sim
                 catch { }
                 continue;
             }
+            if (body.Trim() == "[Vaga]") { Clip vg = new Clip("", true); vg.Empty = true; got.Add(vg); continue; }
             if (body.Length > 0) got.Add(new Clip(body.Replace("\n", "\r\n"), pin));
         }
         List<Clip> res = replace ? new List<Clip>() : new List<Clip>(clips);
         int skipped = 0;
         foreach (Clip c in got)
         {
-            if (res.Exists(delegate(Clip o) { return Same(o, c); })) { skipped++; continue; }
+            if (!c.Empty && res.Exists(delegate(Clip o) { return !o.Empty && Same(o, c); })) { skipped++; continue; }
             if (res.Count >= MaxClips)
             {
                 int last = res.FindLastIndex(delegate(Clip o) { return !o.Pinned && !got.Contains(o); });
@@ -3966,6 +4246,53 @@ atalhos_data=sim
     }
 
     // ------------------------------------------------------------------ pasta de dados
+    static Clip convertFrom; // clip que está virando expansão
+
+    static void ConvertToExpansion(Clip c)
+    {
+        if (c == null || c.IsImage || c.Empty || c.Text.Length == 0) { Info("Só clips de texto podem virar expansão."); return; }
+        HidePopup();
+        if (hwndMgr == IntPtr.Zero || !IsWindowVisible(hwndMgr)) OpenManager(1);
+        else NavTo(1);
+        if (page != 1 || !ResolveDirty(false)) return;
+        if (xFilter.Length > 0) { SetWindowTextW(hXSearch, ""); xFilter = ""; }
+        xSel = null;
+        xNew = true;
+        RefreshX(true);
+        mgrLoading = true;
+        SetWindowTextW(hXText, c.Text.Replace("\r\n", "\n").Replace("\n", "\r\n"));
+        mgrLoading = false;
+        ResetEditHist(hXText);
+        SetXDirty(true);
+        convertFrom = c;
+        SetFocus(hXAbbr);
+        RepaintAll();
+    }
+
+    // Depois de salvar o atalho convertido: tirar o clip da lista ou manter os dois?
+    static void AfterConvertSaved()
+    {
+        Clip src = convertFrom;
+        convertFrom = null;
+        if (src == null || !clips.Contains(src)) return;
+        dlgEscResult = 2;
+        dlgPrimary = 2;
+        dlgRedNote = src.Pinned ? "Atenção: este clip está FIXADO. \"Remover Duplicata\" também o tira da sua lista de clips fixados." : "";
+        int r = AskDialog("Atalho criado", "O texto agora também está em Atalhos por Expansão.\nRemover o clip da lista de clips, para ficar só em Expansões, ou manter os dois?",
+            "Remover Duplicata", "Manter Duplicata", null);
+        dlgRedNote = "";
+        if (r != 1) return;
+        if (src.Pinned) DeleteClipAsk(src);
+        else
+        {
+            PushClipUndo();
+            clips.Remove(src);
+            if (mgrSel == src) mgrSel = null;
+            SaveClips();
+            RefreshList();
+        }
+    }
+
     static void ConflictMenu()
     {
         List<MI> mi = new List<MI>();
@@ -4122,7 +4449,7 @@ atalhos_data=sim
 
     // ------------------------------------------------------------------ nuvem (OneDrive pela internet ou uma pasta sincronizada)
     // ID do ClipAtalho no portal da Microsoft (registro do aplicativo). Vazio = conexão com o OneDrive ainda não liberada.
-    const string ONEDRIVE_CLIENT_ID = "";
+    const string ONEDRIVE_CLIENT_ID = "83295991-f0f7-4371-a9a6-c062010e68d6";
     const string OD_SCOPE = "Files.ReadWrite.AppFolder offline_access";
     const string OD_AUTH = "https://login.microsoftonline.com/consumers/oauth2/v2.0/";
     static string cloudClientOverride = "";
@@ -4594,6 +4921,117 @@ atalhos_data=sim
         else { cloudLastSync = i.Stamp; SaveLocal(); } // não pergunta de novo por esta mesma versão
     }
 
+    // ---- tempo real: cada Ctrl+C vai para a nuvem; o outro computador confere a cada 5 segundos
+    static bool cloudLive, cloudLiveImg, livePolling, liveInit, liveApplying;
+    static string liveLastId = "";
+    class LivePacket { public string Id = "", Machine = "", Type = "texto", Img, Text = ""; public byte[] ImgBytes; }
+    static LivePacket liveIncoming;
+
+    static void StartLive()
+    {
+        KillTimer(hwndMain, (IntPtr)TIMER_LIVE);
+        liveInit = false;
+        if (cloudLive && CloudReady()) SetTimer(hwndMain, (IntPtr)TIMER_LIVE, 5000, IntPtr.Zero);
+    }
+
+    static void LiveSend(Clip c)
+    {
+        if (!cloudLive || !CloudReady() || liveApplying || c == null || c.Empty) return;
+        if (c.IsImage && (!cloudLiveImg || !EnsureImageFile(c))) return;
+        if (!c.IsImage && c.Text.Length == 0) return;
+        string id = DateTime.UtcNow.Ticks + "-" + Environment.MachineName;
+        liveLastId = id; // o próprio envio não volta para cá
+        string img = c.IsImage ? ImgNameOf(c) : null;
+        byte[] ib = img != null ? File.ReadAllBytes(Path.Combine(ImgDir, img)) : null;
+        string pay = "id=" + id + "\r\ncomputador=" + Environment.MachineName + "\r\ntipo=" + (img != null ? "imagem\r\nimagem=" + img : "texto") + "\r\n---\r\n" + (img != null ? "" : c.Text);
+        ThreadPool.QueueUserWorkItem(delegate(object o)
+        {
+            try
+            {
+                if (ib != null) CloudPut("agora/" + img, ib);
+                CloudPut("ClipAtalho-agora.txt", Encoding.UTF8.GetBytes(pay));
+            }
+            catch (Exception e) { Log("Tempo real: falha ao enviar: " + e.Message); }
+        });
+    }
+
+    static LivePacket ParseLive(string t)
+    {
+        LivePacket p = new LivePacket();
+        int sep = t.IndexOf("\r\n---\r\n");
+        if (sep < 0) return null;
+        foreach (string raw in t.Substring(0, sep).Split('\n'))
+        {
+            int eq = raw.IndexOf('=');
+            if (eq < 1) continue;
+            string k = raw.Substring(0, eq).Trim(), v = raw.Substring(eq + 1).Trim();
+            if (k == "id") p.Id = v;
+            else if (k == "computador") p.Machine = v;
+            else if (k == "tipo") p.Type = v;
+            else if (k == "imagem") p.Img = Path.GetFileName(v);
+        }
+        p.Text = t.Substring(sep + 7);
+        return p.Id.Length > 0 ? p : null;
+    }
+
+    static void OnLiveTimer()
+    {
+        if (!cloudLive || !CloudReady()) { KillTimer(hwndMain, (IntPtr)TIMER_LIVE); return; }
+        if (livePolling || cloudBusy) return;
+        livePolling = true;
+        bool wantImg = cloudLiveImg;
+        string imgDir = ImgDir, last = liveLastId;
+        ThreadPool.QueueUserWorkItem(delegate(object o)
+        {
+            try
+            {
+                byte[] b = CloudGet("ClipAtalho-agora.txt");
+                LivePacket p = b == null ? null : ParseLive(Encoding.UTF8.GetString(b).TrimStart((char)0xFEFF));
+                if (p != null && p.Id != last && p.Type == "imagem" && wantImg && p.Img != null && !File.Exists(Path.Combine(imgDir, p.Img)))
+                    p.ImgBytes = CloudGet("agora/" + p.Img);
+                if (p != null && p.Id != last) { liveIncoming = p; PostMessageW(hwndMain, WM_CLOUDLIVE, IntPtr.Zero, IntPtr.Zero); }
+                else if (p == null) { liveInit = true; }
+            }
+            catch (Exception e) { Log("Tempo real: falha ao conferir: " + e.Message); }
+            finally { livePolling = false; }
+        });
+    }
+
+    static void OnLiveIncoming()
+    {
+        LivePacket p = liveIncoming;
+        liveIncoming = null;
+        if (p == null || p.Id == liveLastId) return;
+        liveLastId = p.Id;
+        bool first = !liveInit;
+        liveInit = true;
+        if (first || p.Machine == Environment.MachineName) return; // ao ligar, não cola algo antigo
+        liveApplying = true;
+        try
+        {
+            if (p.Type == "imagem")
+            {
+                if (!cloudLiveImg || p.Img == null) return;
+                string lp = Path.Combine(ImgDir, p.Img);
+                if (!File.Exists(lp) && p.ImgBytes != null) { Directory.CreateDirectory(ImgDir); File.WriteAllBytes(lp, p.ImgBytes); }
+                Clip ic = LoadImageClip(p.Img, false);
+                if (ic == null || ic.Image == IntPtr.Zero) return;
+                AddCopiedClip(ic);
+                SetClipboardImage(ic);
+            }
+            else
+            {
+                if (p.Text.Length == 0) return;
+                AddCopiedClip(new Clip(p.Text, false));
+                SetClipboardText(p.Text);
+            }
+            RefreshPopupList();
+            if (popMode == MODE_NONE) ShowNotice("Recebido do computador " + p.Machine + " — já dá para colar (Ctrl+V).");
+        }
+        catch (Exception e) { Log("Tempo real: falha ao receber: " + e.Message); }
+        finally { liveApplying = false; }
+    }
+
     static void CloudProvMenu()
     {
         List<MI> mi = new List<MI>();
@@ -4742,6 +5180,7 @@ atalhos_data=sim
         if (cloudAuthState != 1) { CloudError("conectar ao OneDrive", authErr ?? "o código expirou; tente de novo", false); return; }
         cloudProv = 1;
         SaveLocal();
+        StartLive();
         Log("Nuvem: OneDrive conectado");
         RepaintAll();
         Info("OneDrive conectado!");
@@ -4975,7 +5414,9 @@ atalhos_data=sim
     static void RefreshX(bool reloadFields)
     {
         if (hwndMgr == IntPtr.Zero || !IsWindowVisible(hwndMgr)) return;
-        xKeys = new List<string>(cfgAbbrOrder);
+        string xf = Fold(xFilter.Trim());
+        xKeys = xf.Length == 0 ? new List<string>(cfgAbbrOrder)
+            : cfgAbbrOrder.FindAll(delegate(string k) { string v; return Fold(k).Contains(xf) || (cfgAbbr.TryGetValue(k, out v) && Fold(v).Contains(xf)); });
         if (xSel != null && !cfgAbbr.ContainsKey(xSel)) xSel = null;
         if (xSel == null && !xNew && xKeys.Count > 0) xSel = xKeys[0];
         mgrLoading = true;
@@ -5087,7 +5528,7 @@ atalhos_data=sim
         string text = CtlText(hXText);
         if (!ValidAbbr(abbr))
         {
-            Info("O atalho deve ter só letras sem acento e números (até 32), sem espaços.\nExemplos: bn1, prst, obrigado");
+            Info("O atalho pode ter letras, números, símbolos e espaços (até 32 caracteres).\nNão pode ter \"=\", nem começar com \"-\", \";\" ou \"[\".\nExemplos: bn1, @end, bom dia!");
             SetFocus(hXAbbr);
             return false;
         }
@@ -5131,6 +5572,7 @@ atalhos_data=sim
         xSel = abbr;
         xNew = false;
         RefreshX(true);
+        if (convertFrom != null) AfterConvertSaved();
         return true;
     }
 
@@ -5140,7 +5582,7 @@ atalhos_data=sim
         if (hXAbbr == IntPtr.Zero) return null;
         string a = CtlText(hXAbbr).Trim().ToLowerInvariant();
         if (a.Length == 0) return null;
-        if (!ValidAbbr(a)) return "Só letras e números";
+        if (!ValidAbbr(a)) return "Atalho inválido";
         if (a != xSel && cfgAbbr.ContainsKey(a)) return "Atalho já em uso";
         return null;
     }
@@ -5362,7 +5804,7 @@ atalhos_data=sim
                         XSelectKey(xKeys[idx]); // pergunta antes de trocar; o clique original é descartado
                         return IntPtr.Zero;
                     }
-                    xDragFrom = idx;
+                    xDragFrom = xFilter.Trim().Length == 0 ? idx : -1; // com busca ativa não dá para arrastar
                     xDragStartY = y;
                     xDragTarget = -1;
                     xDragging = false;
@@ -5533,6 +5975,9 @@ atalhos_data=sim
             case IDC_CLOUDPROV: return "Nuvem: " + (cloudProv == 1 ? "OneDrive" : cloudProv == 2 ? "pasta (Google Drive, Dropbox…)" : "escolher…") + "   ▼";
             case IDC_CLOUDCONN: return cloudProv == 1 ? (cloudRefresh != null ? "Desconectar" : "Conectar ao OneDrive") : cloudProv == 2 ? "Trocar pasta…" : "Escolher nuvem…";
             case IDC_CLOUDMODE: return "Depois de alterar algo: " + CloudModeNames[cloudMode] + "   ▼";
+            case IDC_GOCLOUD: return "Quer guardar online e usar em outro computador? Use a aba Nuvem  →";
+            case IDC_T_CLOUDLIVE: return "Tempo real: o que você copiar aqui aparece no outro computador em poucos segundos (e vice-versa)";
+            case IDC_T_CLOUDLIVEIMG: return "Incluir imagens no tempo real (usa mais internet)";
             case IDC_T_CLOUDCHECK: return "Ao abrir o programa, avisar se a nuvem tiver uma versão mais nova (enviada por outro computador)";
             case IDC_BK_CLIPS: return "Backup dos clips";
             case IDC_BK_X: return "Backup das expansões";
@@ -5574,6 +6019,11 @@ atalhos_data=sim
             DrawTextAt(d.hDC, (id == IDC_UNDO || id == IDC_XUNDO || id == IDC_CUNDO) ? "\uE7A7" : "\uE7A6", hIconFont, can ? C_ACCENT : C_LINE, l, t, l + w, t + h, 0x25);
             return;
         }
+        if (id == IDC_GOCLOUD) // link para a aba Nuvem
+        {
+            DrawTextAt(d.hDC, ButtonLabel(id), down ? hUiBold : hUiFont, C_ACCENT, l, t, l + w, t + h, 0x26); // à direita
+            return;
+        }
         if (id == IDC_CLOUDUP || id == IDC_CLOUDDOWN) // enviar (nuvem ↑) e baixar (PC ↓)
         {
             bool up = id == IDC_CLOUDUP, ok = CloudReady() && !cloudBusy;
@@ -5586,9 +6036,9 @@ atalhos_data=sim
             DrawTextAt(d.hDC, up ? "Enviar para a nuvem" : "Baixar da nuvem", hUiBold, tc, ix + Px(56), t, l + w - Px(10), t + h, 0x24);
             return;
         }
-        if ((id >= IDC_T_STARTUP && id <= IDC_T_EXPAND) || id == IDC_T_IMAGES || id == IDC_T_DATADIR || id == IDC_T_DATEKEY || id == IDC_T_CLOUDCHECK) // chave liga/desliga
+        if ((id >= IDC_T_STARTUP && id <= IDC_T_EXPAND) || id == IDC_T_IMAGES || id == IDC_T_DATADIR || id == IDC_T_DATEKEY || id == IDC_T_CLOUDCHECK || id == IDC_T_CLOUDLIVE || id == IDC_T_CLOUDLIVEIMG) // chave liga/desliga
         {
-            bool on = id == IDC_T_DATEKEY ? cfgDateKey : id == IDC_T_CLOUDCHECK ? cloudCheck : id == IDC_T_DATADIR ? dataOn : id == IDC_T_IMAGES ? cfgImages : (id == IDC_T_STARTUP ? startupOn : (id == IDC_T_SAVEALL ? cfgSaveAll : cfgExpand));
+            bool on = id == IDC_T_CLOUDLIVE ? cloudLive : id == IDC_T_CLOUDLIVEIMG ? cloudLiveImg : id == IDC_T_DATEKEY ? cfgDateKey : id == IDC_T_CLOUDCHECK ? cloudCheck : id == IDC_T_DATADIR ? dataOn : id == IDC_T_IMAGES ? cfgImages : (id == IDC_T_STARTUP ? startupOn : (id == IDC_T_SAVEALL ? cfgSaveAll : cfgExpand));
             int tw = Px(40), th = Px(22), ty = t + (h - th) / 2, knob = Px(16);
             RoundRect(d.hDC, l, ty, tw, th, th / 2, on ? A_ACCENT : A_BTNBORDER, 0);
             RoundRect(d.hDC, on ? l + tw - knob - Px(3) : l + Px(3), ty + (th - knob) / 2, knob, knob, knob / 2, 0xFFFFFFFF, 0);
@@ -5693,9 +6143,10 @@ atalhos_data=sim
     static void DrawListItem(DRAWITEMSTRUCT d)
     {
         FillRect(d.hDC, ref d.rcItem, hBgBrush);
-        int i = (int)d.itemID;
-        if (i < 0 || i >= clips.Count) return;
-        Clip c = clips[i];
+        int li = (int)d.itemID;
+        if (li < 0 || li >= listView.Count) return;
+        Clip c = listView[li];
+        int i = clips.IndexOf(c); // número real da posição (a busca não muda os números)
         bool sel = (d.itemState & 0x1) != 0;
         int x = d.rcItem.Left + Px(2), y = d.rcItem.Top + Px(3);
         int w = d.rcItem.Right - d.rcItem.Left - Px(8), h = d.rcItem.Bottom - d.rcItem.Top - Px(6);
@@ -5716,17 +6167,17 @@ atalhos_data=sim
         }
         else
         {
-            DrawTextAt(d.hDC, c.Text.Length == 0 ? "(vazio — digite o texto e clique em Salvar)" : Preview(c.Text, 90),
+            DrawTextAt(d.hDC, c.Empty ? "(posição livre — selecione e digite um texto para preencher)" : c.Text.Length == 0 ? "(vazio — digite o texto e clique em Salvar)" : Preview(c.Text, 90),
                 hUiFont, c.Text.Length == 0 ? C_GRAY : C_TEXT, tx, y + Px(7), tr, y + Px(28), 0x8024);
-            DrawTextAt(d.hDC, (c.Pinned ? "★ Fixado" : "Recente") + "  ·  " + c.Text.Length + " caracteres",
+            DrawTextAt(d.hDC, c.Empty ? "★ Fixado  ·  vaga guardada" : (c.Pinned ? "★ Fixado" : "Recente") + "  ·  " + c.Text.Length + " caracteres",
                 hSmallFont, c.Pinned ? C_ACCENT : C_GRAY, tx, y + Px(28), tr, y + h - Px(6), 0x8024);
         }
 
         if (dragging) // marca onde o clip arrastado vai entrar
         {
             RECT line = d.rcItem;
-            if (i == dragTarget) { line.Bottom = line.Top + Px(3); FillRect(d.hDC, ref line, hAccentBrush); }
-            else if (dragTarget >= clips.Count && i == clips.Count - 1) { line.Top = line.Bottom - Px(3); FillRect(d.hDC, ref line, hAccentBrush); }
+            if (li == dragTarget) { line.Bottom = line.Top + Px(3); FillRect(d.hDC, ref line, hAccentBrush); }
+            else if (dragTarget >= clips.Count && li == clips.Count - 1) { line.Top = line.Bottom - Px(3); FillRect(d.hDC, ref line, hAccentBrush); }
         }
     }
 
@@ -5737,6 +6188,18 @@ atalhos_data=sim
         DrawAppIcon(hdc, Px(18), Px(8), Px(16)); // nome do programa sempre visível
         DrawTextAt(hdc, "ClipAtalho", hUiBold, C_ACCENT, Px(40), Px(4), Px(336), Px(28), 0x24);
         DrawTextAt(hdc, PageTitles[page], hTitleFont, C_TEXT, Px(18), Px(22), Px(336), Px(52), 0x24);
+        if (page == 0 || page == 1)
+        {
+            int sy = page == 0 ? 78 : 114;
+            string sf = page == 0 ? clipFilter : xFilter;
+            RoundRect(hdc, Px(16), Px(sy), Px(336), Px(30), Px(9), A_WHITE, sf.Length > 0 ? A_ACCENT : A_BTNBORDER);
+            DrawTextAt(hdc, "\uE721", hIconFont, sf.Length > 0 ? C_ACCENT : C_GRAY, Px(22), Px(sy), Px(44), Px(sy + 30), 0x25);
+            if (sf.Length == 0 && GetFocus() != (page == 0 ? hSearch : hXSearch))
+                DrawTextAt(hdc, page == 0 ? "Pesquisar nos clips…   (Ctrl+F)" : "Pesquisar atalho ou texto…   (Ctrl+F)", hUiFont, C_GRAY, Px(48), Px(sy), Px(346), Px(sy + 30), 0x24);
+            int shown = page == 0 ? listView.Count : xKeys.Count, total = page == 0 ? clips.Count : cfgAbbrOrder.Count;
+            if (sf.Trim().Length > 0)
+                DrawTextAt(hdc, shown == 0 ? "Nada encontrado" : shown + " de " + total, hSmallFont, shown == 0 ? C_RED : C_ACCENT, Px(16), Px(482), Px(352), Px(500), 0x24);
+        }
         if (page == 0)
         {
             DrawTextAt(hdc, cfgModsLabel + "+1…9 cola o clip da posição  ·  arraste para reordenar  ·  botão direito para mais opções" +
@@ -5759,7 +6222,7 @@ atalhos_data=sim
             DrawTextAt(hdc, "Digite o atalho em qualquer programa e aperte Tab  ·  arraste para reordenar  ·  botão direito para mais opções" +
                 (cfgExpand ? "" : "  ·  DESLIGADA (ligue em Configurações)"), hUiFont, cfgExpand ? C_GRAY : C_RED, Px(18), Px(50), Px(804), Px(72), 0x8024);
             RoundRect(hdc, Px(362), Px(78), Px(442), Px(400), Px(11), A_WHITE, A_BORDER);
-            DrawTextAt(hdc, "Atalho  ·  o que você digita (só letras sem acento e números; ex.: bn1)", hSmallFont, C_GRAY, Px(376), Px(86), Px(726), Px(106), 0x8024);
+            DrawTextAt(hdc, "Atalho  ·  o que você digita (letras, números, símbolos, espaço; ex.: bn1)", hSmallFont, C_GRAY, Px(376), Px(86), Px(726), Px(106), 0x8024);
             RoundRect(hdc, Px(370), Px(108), Px(212), Px(32), Px(8), A_WHITE, A_BTNBORDER);
             string warn = XAbbrWarning();
             if (warn != null) DrawTextAt(hdc, warn, hUiBold, C_RED, Px(592), Px(108), Px(796), Px(140), 0x8024);
@@ -5818,8 +6281,8 @@ atalhos_data=sim
             DrawTextAt(hdc, ci, cloudBusy ? hUiBold : hUiFont, cloudBusy ? C_ACCENT : C_TEXT, Px(36), Px(266), Px(780), Px(288), 0x8024);
             DrawTextAt(hdc, cloudLastSync.Length > 0 ? "Última sincronização deste computador: " + StampText(cloudLastSync) : "Este computador ainda não sincronizou.",
                 hSmallFont, C_GRAY, Px(36), Px(290), Px(780), Px(312), 0x8024);
-            DrawTextAt(hdc, "No OneDrive, o ClipAtalho só enxerga a própria pasta (Aplicativos › ClipAtalho), não os seus outros arquivos. O login é feito na página da Microsoft: a senha não passa pelo programa. O que você copia (Ctrl+C) vai junto quando você envia, mas não dispara o aviso de envio.",
-                hSmallFont, C_GRAY, Px(36), Px(410), Px(780), Px(470), 0x10);
+            DrawTextAt(hdc, "No OneDrive, o ClipAtalho só enxerga a própria pasta (Aplicativos › ClipAtalho), não os seus outros arquivos. O login é feito na página da Microsoft: a senha não passa pelo programa. Tempo real: com o OneDrive chega em uns 5 a 10 segundos; com pasta do Google Drive/Dropbox depende do aplicativo deles.",
+                hSmallFont, C_GRAY, Px(36), Px(466), Px(780), Px(518), 0x10);
         }
         else
         {
@@ -5891,18 +6354,41 @@ atalhos_data=sim
         InvalidateRect(hwndMgr, IntPtr.Zero, true);
     }
 
+    static List<Clip> listView = new List<Clip>(); // clips mostrados na lista (todos, ou só os que batem com a busca)
+    static string clipFilter = "", xFilter = "", popFilter = "";
+
+    // Sem acentos e em minúsculas: "acao" encontra "Ação".
+    static string Fold(string s)
+    {
+        if (s == null) return "";
+        string n = s.ToLowerInvariant().Normalize(NormalizationForm.FormD);
+        StringBuilder b = new StringBuilder(n.Length);
+        foreach (char ch in n)
+            if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(ch) != System.Globalization.UnicodeCategory.NonSpacingMark) b.Append(ch);
+        return b.ToString();
+    }
+
+    static bool ClipMatches(Clip c, string f)
+    {
+        if (f.Length == 0) return true;
+        if (c.IsImage) return Fold("imagem").Contains(f);
+        return Fold(c.Text).Contains(f);
+    }
+
     static void RefreshList()
     {
         if (hwndMgr == IntPtr.Zero || !IsWindowVisible(hwndMgr)) return;
+        string f = Fold(clipFilter.Trim());
+        listView = clips.FindAll(delegate(Clip c) { return ClipMatches(c, f); });
         mgrLoading = true;
         SendMessageW(hList, 0x000B, IntPtr.Zero, IntPtr.Zero); // WM_SETREDRAW off (sem piscar)
         int top = SendMessageW(hList, 0x018E, IntPtr.Zero, IntPtr.Zero).ToInt32(); // LB_GETTOPINDEX
         SendMessageW(hList, 0x0184, IntPtr.Zero, IntPtr.Zero); // LB_RESETCONTENT
-        for (int i = 0; i < clips.Count; i++)
-            SendMessageStr(hList, 0x0180, IntPtr.Zero, ""); // LB_ADDSTRING (o desenho usa a lista de clips)
-        if (mgrSel == null || !clips.Contains(mgrSel)) mgrSel = clips.Count > 0 ? clips[0] : null;
-        if (top > 0 && top < clips.Count) SendMessageW(hList, 0x0197, (IntPtr)top, IntPtr.Zero); // LB_SETTOPINDEX
-        if (mgrSel != null) SendMessageW(hList, 0x0186, (IntPtr)clips.IndexOf(mgrSel), IntPtr.Zero); // LB_SETCURSEL
+        for (int i = 0; i < listView.Count; i++)
+            SendMessageStr(hList, 0x0180, IntPtr.Zero, ""); // LB_ADDSTRING (o desenho usa listView)
+        if (mgrSel == null || !clips.Contains(mgrSel)) mgrSel = listView.Count > 0 ? listView[0] : (f.Length == 0 && clips.Count > 0 ? clips[0] : null);
+        if (top > 0 && top < listView.Count) SendMessageW(hList, 0x0197, (IntPtr)top, IntPtr.Zero); // LB_SETTOPINDEX
+        if (mgrSel != null) SendMessageW(hList, 0x0186, (IntPtr)listView.IndexOf(mgrSel), IntPtr.Zero); // LB_SETCURSEL
         SendMessageW(hList, 0x000B, (IntPtr)1, IntPtr.Zero);
         InvalidateRect(hList, IntPtr.Zero, true);
         mgrLoading = false;
@@ -5912,8 +6398,8 @@ atalhos_data=sim
 
     static void SelectIndex(int idx)
     {
-        if (idx < 0 || idx >= clips.Count) return;
-        mgrSel = clips[idx];
+        if (idx < 0 || idx >= listView.Count) return;
+        mgrSel = listView[idx];
         SendMessageW(hList, 0x0186, (IntPtr)idx, IntPtr.Zero); // LB_SETCURSEL
         if (editClip != mgrSel) LoadEdit();
     }
@@ -5941,7 +6427,7 @@ atalhos_data=sim
         long r = CallWindowProcW(oldListProc, hList, 0x01A9, IntPtr.Zero, lParam).ToInt64(); // LB_ITEMFROMPOINT
         if (((r >> 16) & 0xFFFF) != 0) return -1;
         int idx = (int)(r & 0xFFFF);
-        return idx < clips.Count ? idx : -1;
+        return idx < listView.Count ? idx : -1;
     }
 
     // Mouse da lista: arrastar para reordenar e botão direito para o menu.
@@ -5955,13 +6441,13 @@ atalhos_data=sim
                 case 0x0201: // WM_LBUTTONDOWN
                 {
                     int idx = ItemAt(lParam);
-                    if (editDirty && idx >= 0 && clips[idx] != editClip)
+                    if (editDirty && idx >= 0 && listView[idx] != editClip)
                     {
                         // pergunta antes de trocar de clip; o clique original é descartado
                         if (ResolveDirty(false)) SelectIndex(idx);
                         return IntPtr.Zero;
                     }
-                    dragFrom = idx;
+                    dragFrom = clipFilter.Trim().Length == 0 ? idx : -1; // com busca ativa não dá para arrastar
                     dragStartY = y;
                     dragTarget = -1;
                     dragging = false;
@@ -6007,17 +6493,20 @@ atalhos_data=sim
                 case 0x0204: // WM_RBUTTONDOWN: seleciona o clip sob o ponteiro
                 {
                     int idx = ItemAt(lParam);
-                    if (idx >= 0 && clips[idx] != mgrSel && ResolveDirty(false)) SelectIndex(idx);
+                    if (idx >= 0 && listView[idx] != mgrSel && ResolveDirty(false)) SelectIndex(idx);
                     return IntPtr.Zero;
                 }
                 case 0x0205: // WM_RBUTTONUP: menu do clip
                 {
                     int idx = ItemAt(lParam);
-                    if (idx < 0 || clips[idx] != mgrSel) return IntPtr.Zero;
+                    if (idx < 0 || listView[idx] != mgrSel) return IntPtr.Zero;
                     List<MI> mi = new List<MI>();
-                    mi.Add(Item(IDC_PIN, mgrSel.Pinned ? "☆  Soltar (deixar de fixar)" : "★  Fixar nesta posição"));
+                    mi.Add(Item(IDC_PIN, mgrSel.Pinned ? "☆  Soltar (deixar de fixar)" : "★  Fixar (vai para baixo dos fixados)"));
                     mi.Add(Item(IDC_UP, "↑  Subir"));
                     mi.Add(Item(IDC_DOWN, "↓  Descer"));
+                    MI toExp = Item(IDC_TOEXP, "↪  Converter em expansão");
+                    toExp.Off = mgrSel.IsImage || mgrSel.Empty || mgrSel.Text.Length == 0;
+                    mi.Add(toExp);
                     mi.Add(Sep());
                     mi.Add(Item(IDC_DEL, "Excluir"));
                     POINT pt;
@@ -6038,15 +6527,25 @@ atalhos_data=sim
         {
             if (code != 1 || mgrLoading) return; // LBN_SELCHANGE
             int cur = SendMessageW(hList, 0x0188, IntPtr.Zero, IntPtr.Zero).ToInt32(); // LB_GETCURSEL
-            Clip target = (cur >= 0 && cur < clips.Count) ? clips[cur] : null;
+            Clip target = (cur >= 0 && cur < listView.Count) ? listView[cur] : null;
             if (target != editClip && !ResolveDirty(false))
             {
                 // continua editando: volta a seleção para o clip em edição
-                SendMessageW(hList, 0x0186, (IntPtr)clips.IndexOf(mgrSel), IntPtr.Zero);
+                SendMessageW(hList, 0x0186, (IntPtr)listView.IndexOf(mgrSel), IntPtr.Zero);
                 return;
             }
             mgrSel = target;
             if (editClip != mgrSel) LoadEdit();
+            return;
+        }
+        if (id == IDC_SEARCH || id == IDC_XSEARCH)
+        {
+            if (code == 0x0300) // EN_CHANGE: filtra a cada letra
+            {
+                if (id == IDC_SEARCH) { clipFilter = CtlText(hSearch); RefreshList(); }
+                else { xFilter = CtlText(hXSearch); RefreshX(false); }
+            }
+            else if (code == 0x0200) { UpdateSearchBoxes(); RepaintAll(); } // EN_KILLFOCUS: vazio = volta a dica
             return;
         }
         if (id == IDC_EDIT)
@@ -6067,6 +6566,7 @@ atalhos_data=sim
             }
             if (key != null && cfgAbbr.ContainsKey(key)) xSel = key;
             xNew = false;
+            convertFrom = null;
             LoadX(); // sem recriar a lista no meio do clique
             return;
         }
@@ -6130,17 +6630,12 @@ atalhos_data=sim
                 if (idx >= 0 && idx < clips.Count - 1) { clips.RemoveAt(idx); clips.Insert(idx + 1, mgrSel); }
                 break;
             case IDC_PIN:
-                if (idx >= 0) mgrSel.Pinned = !mgrSel.Pinned;
+                if (idx >= 0) PinToEnd(mgrSel);
                 break;
             case IDC_DEL:
                 if (idx < 0) return;
-                if (mgrSel.Pinned && (mgrSel.Text.Length > 0 || mgrSel.IsImage) &&
-                    AskDialog("Excluir clip", "Excluir este clip fixado? Não é possível desfazer.", "Excluir", "Cancelar", null) != 1) return;
-                clips.RemoveAt(idx);
-                mgrSel = clips.Count == 0 ? null : clips[Math.Min(idx, clips.Count - 1)];
-                editClip = null;
-                if (clips.Count == 0) LoadEdit();
-                break;
+                DeleteClipAsk(mgrSel);
+                return;
             case IDC_NEW:
                 if (!ResolveDirty(false)) return;
                 idx = mgrSel == null ? -1 : clips.IndexOf(mgrSel);
@@ -6179,6 +6674,7 @@ atalhos_data=sim
                 return;
             case IDC_XNEW:
                 if (!ResolveDirty(false)) return;
+                convertFrom = null;
                 xSel = null;
                 xNew = true;
                 RefreshX(true);
@@ -6293,6 +6789,18 @@ atalhos_data=sim
                 SaveLocal();
                 RepaintAll();
                 return;
+            case IDC_T_CLOUDLIVE:
+                if (!cloudLive && !CloudReady()) { Info("Escolha e conecte a nuvem primeiro (OneDrive ou pasta)."); return; }
+                cloudLive = !cloudLive;
+                SaveLocal();
+                StartLive();
+                RepaintAll();
+                return;
+            case IDC_T_CLOUDLIVEIMG:
+                cloudLiveImg = !cloudLiveImg;
+                SaveLocal();
+                RepaintAll();
+                return;
             case IDC_BK_CLIPS: DoBackup(true, false); return;
             case IDC_BK_X: DoBackup(false, true); return;
             case IDC_BK_ALL: DoBackup(true, true, true); return;
@@ -6305,6 +6813,8 @@ atalhos_data=sim
             case IDC_FACTORY: FactoryReset(); return;
             case IDC_UNDO: case IDC_REDO: DoUndo(0, id == IDC_REDO); return;
             case IDC_XUNDO: case IDC_XREDO: DoUndo(1, id == IDC_XREDO); return;
+            case IDC_TOEXP: ConvertToExpansion(mgrSel); return;
+            case IDC_GOCLOUD: ShowPage(5); return;
             case IDC_CUNDO: case IDC_CREDO: DoUndo(2, id == IDC_CREDO); return;
             case IDC_FEEDBACK: FeedbackDialog(); return;
 
@@ -6374,6 +6884,13 @@ atalhos_data=sim
                 case WM_PAINT:
                     PaintManager(hwnd);
                     return IntPtr.Zero;
+                case 0x0201: // WM_LBUTTONDOWN: clique na caixa "Pesquisar…" abre o campo de busca
+                {
+                    int mx = (short)(lParam.ToInt64() & 0xFFFF), my = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
+                    int by = page == 0 ? Px(78) : Px(114);
+                    if ((page == 0 || page == 1) && mx >= Px(16) && mx < Px(352) && my >= by && my < by + Px(30)) OpenSearch();
+                    break;
+                }
                 case 0x002B: // WM_DRAWITEM
                     DRAWITEMSTRUCT d = (DRAWITEMSTRUCT)Marshal.PtrToStructure(lParam, typeof(DRAWITEMSTRUCT));
                     if (d.CtlType == 2 && d.CtlID == IDC_XLIST) Buffered(d, DrawXItem);
@@ -6399,6 +6916,20 @@ atalhos_data=sim
         }
         catch { }
         return DefWindowProcW(hwnd, m, wParam, lParam);
+    }
+
+    // Janelinha breve, no estilo da sugestão de expansão, que some sozinha.
+    static void ShowNotice(string text)
+    {
+        if (hwndPopup == IntPtr.Zero) return;
+        popAbbr = null;
+        popClips = new List<Clip>();
+        popNumbered = false;
+        popLines = new List<string>();
+        popLines.Add("ClipAtalho");
+        popLines.Add(text);
+        popMode = MODE_NOTICE;
+        ShowPopup(2500);
     }
 
     static void ShowSuggest(string abbr, string text)
@@ -6566,7 +7097,8 @@ atalhos_data=sim
             IntPtr f = popFonts[Math.Max(0, Math.Min(3, (int)Math.Round(sc * 3)))];
             if (f == IntPtr.Zero) f = hFontBold;
             int shift = (int)(Px(6) * sc);
-            DrawTextAt(mem, i.ToString(), f, i <= 9 ? C_ACCENT : C_GRAY, Px(16) + shift / 2, top, Px(46) + shift, bottom, 0x24);
+            int num = clips.IndexOf(c) + 1; // número real (a busca não muda os números)
+            DrawTextAt(mem, num.ToString(), f, num <= 9 ? C_ACCENT : C_GRAY, Px(16) + shift / 2, top, Px(46) + shift, bottom, 0x24);
             int tx = Px(46) + shift;
             if (c.IsImage) // miniatura leve, ampliando com o efeito
             {
@@ -6640,8 +7172,16 @@ atalhos_data=sim
             if (IsCaptureKey(vk)) return false; // não fecha: deixa printar a lista
             if (vk == VK_ESCAPE)
             {
-                PostMessageW(hwndMain, WM_HIDEPOPUP, IntPtr.Zero, IntPtr.Zero);
+                if (popFilter.Length > 0) PostMessageW(hwndMain, WM_POPFILTER, (IntPtr)(-2), IntPtr.Zero); // limpa a busca
+                else PostMessageW(hwndMain, WM_HIDEPOPUP, IntPtr.Zero, IntPtr.Zero);
                 return true;
+            }
+            if (vk == VK_BACK) { PostMessageW(hwndMain, WM_POPFILTER, (IntPtr)(-1), IntPtr.Zero); return true; }
+            if (!(vk >= '0' && vk <= '9') && !(vk >= 0x60 && vk <= 0x69) && !(ctrlAltWin && !AltGrDown()))
+            {
+                if (IsDeadKey(vk)) return true; // acento: a busca ignora acentos
+                char fc = CharFromKey(vk);
+                if (fc != '\0' && !char.IsControl(fc)) { PostMessageW(hwndMain, WM_POPFILTER, (IntPtr)fc, IntPtr.Zero); return true; } // digitar pesquisa
             }
             int n = -1;
             if (vk >= '1' && vk <= '9') n = vk - '1'; // com Shift: cola sem formatação
@@ -6650,10 +7190,13 @@ atalhos_data=sim
             if (n >= 0 && !ctrlAltWin)
             {
                 if (n < clips.Count) PasteClip(clips[n], shift);
+                else PostMessageW(hwndMain, WM_POPFILTER, (IntPtr)(-9), IntPtr.Zero); // aviso de posição vazia
                 return true;
             }
             return false;
         }
+
+        if (popMode == MODE_NOTICE && !IsModifierVk(vk)) PostMessageW(hwndMain, WM_HIDEPOPUP, IntPtr.Zero, IntPtr.Zero);
 
         if (popMode == MODE_SUGGEST)
         {
@@ -6698,23 +7241,74 @@ atalhos_data=sim
         }
 
         if (!cfgExpand || cfgAbbr.Count == 0) return false;
-        DateTime now = DateTime.UtcNow;
         IntPtr fg = GetForegroundWindow();
-        if (fg != lastFg || (now - lastKey).TotalSeconds > 5) typed.Length = 0;
+        if (fg != lastFg) typed.Length = 0; // trocou de janela: recomeça (sem limite de tempo para terminar o atalho)
         lastFg = fg;
-        lastKey = now;
+        lastKey = DateTime.UtcNow;
 
-        if (ctrlAltWin) { typed.Length = 0; return false; }
-        if (vk >= 'A' && vk <= 'Z') typed.Append((char)(vk + 32));
-        else if (vk >= '0' && vk <= '9' && !shift) typed.Append((char)vk);
-        else if (vk >= 0x60 && vk <= 0x69) typed.Append((char)(vk - 0x60 + '0'));
-        else if (vk == VK_BACK) { if (typed.Length > 0) typed.Length--; }
-        else { typed.Length = 0; return false; }
-
-        if (typed.Length > 32) typed.Remove(0, typed.Length - 32);
-        if (cfgAbbr.ContainsKey(typed.ToString()))
+        if (ctrlAltWin && !AltGrDown()) { typed.Length = 0; return false; }
+        if (vk == VK_BACK) { if (typed.Length > 0) typed.Length--; }
+        else if (vk == 0x0D || vk == VK_TAB || vk == VK_ESCAPE || (vk >= 0x21 && vk <= 0x28) || vk == 0x2D || vk == 0x2E)
+        { typed.Length = 0; return false; } // Enter, Tab, setas, Home/End, PgUp/PgDn, Insert, Delete: o cursor mudou de lugar
+        else
+        {
+            char ch = CharFromKey(vk);
+            if (ch == '\0') { if (!IsDeadKey(vk)) typed.Length = 0; return false; }
+            typed.Append(char.ToLowerInvariant(ch));
+        }
+        if (typed.Length > 64) typed.Remove(0, typed.Length - 64);
+        // O atalho vale quando o que foi digitado TERMINA com ele (apagar e redigitar a última letra também funciona)
+        string t = typed.ToString(), best = null;
+        foreach (string k in cfgAbbr.Keys)
+        {
+            if (k.Length > t.Length || (best != null && k.Length <= best.Length) || !t.EndsWith(k, StringComparison.Ordinal)) continue;
+            int at = t.Length - k.Length;
+            if (at > 0 && char.IsLetterOrDigit(t[at - 1]) && char.IsLetterOrDigit(k[0])) continue; // no meio de uma palavra não vale
+            best = k;
+        }
+        if (best != null)
+        {
+            matchAbbr = best;
             PostMessageW(hwndMain, WM_SHOWPOPUP, IntPtr.Zero, IntPtr.Zero);
+        }
+        else if (popMode == MODE_SUGGEST) PostMessageW(hwndMain, WM_HIDEPOPUP, IntPtr.Zero, IntPtr.Zero);
         return false;
+    }
+
+    static string matchAbbr;
+    static int lastScan;
+    [DllImport(U)] static extern int ToUnicodeEx(uint vk, uint scan, byte[] state, StringBuilder buf, int cch, uint flags, IntPtr hkl);
+    [DllImport(U)] static extern IntPtr GetKeyboardLayout(uint threadId);
+    [DllImport(U)] static extern uint MapVirtualKeyExW(uint code, uint type, IntPtr hkl);
+    [DllImport(U)] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+    [DllImport(U)] static extern short GetKeyState(int vk);
+
+    static IntPtr FgLayout()
+    {
+        uint pid;
+        return GetKeyboardLayout(GetWindowThreadProcessId(GetForegroundWindow(), out pid));
+    }
+
+    static bool AltGrDown() { return KeyDown(VK_CONTROL) && KeyDown(VK_MENU) && !KeyDown(VK_LWIN) && !KeyDown(VK_RWIN); }
+
+    static bool IsDeadKey(int vk) { return (MapVirtualKeyExW((uint)vk, 2, FgLayout()) & 0x80000000) != 0; }
+
+    // Caractere que a tecla produz no layout do teclado em uso (ç, @, !, espaço...). '\0' se não for caractere.
+    static char CharFromKey(int vk)
+    {
+        try
+        {
+            IntPtr hkl = FgLayout();
+            if ((MapVirtualKeyExW((uint)vk, 2, hkl) & 0x80000000) != 0) return '\0'; // tecla de acento: não mexe (não atrapalha o á, ã...)
+            byte[] st = new byte[256];
+            if (KeyDown(VK_SHIFT)) { st[0x10] = 0x80; st[0xA0] = 0x80; }
+            if ((GetKeyState(0x14) & 1) != 0) st[0x14] = 1; // Caps Lock
+            if (AltGrDown()) { st[0x11] = 0x80; st[0x12] = 0x80; st[0xA2] = 0x80; st[0xA5] = 0x80; }
+            StringBuilder sb = new StringBuilder(8);
+            int n = ToUnicodeEx((uint)vk, (uint)lastScan, st, sb, 8, 4, hkl); // 4 = não altera o estado do teclado
+            return n == 1 && !char.IsControl(sb[0]) ? sb[0] : '\0';
+        }
+        catch { return '\0'; }
     }
 
     static IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
@@ -6725,6 +7319,7 @@ atalhos_data=sim
             if (nCode == 0 && !paused && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN))
             {
                 int vk = Marshal.ReadInt32(lParam);
+                lastScan = Marshal.ReadInt32(lParam, 4);
                 int flags = Marshal.ReadInt32(lParam, 8);
                 if ((flags & 0x10) == 0 && HandleKey(vk)) // ignora teclas injetadas (inclusive as nossas)
                     return (IntPtr)1;
@@ -6760,6 +7355,7 @@ atalhos_data=sim
                     {
                         HidePopup();
                         if (id - 1 < clips.Count) PasteClip(clips[id - 1], plainKey);
+                        else ShowNotice("Você ainda não salvou nada nesta posição.");
                     }
                     return IntPtr.Zero;
                 case WM_TIMER:
@@ -6781,11 +7377,14 @@ atalhos_data=sim
                         case TIMER_CONFIG:
                             if (File.Exists(iniPath) && File.GetLastWriteTimeUtc(iniPath) != iniMod) OnIniChangedOutside();
                             RunAutoDelete();
+                            AutoDailyBackup();
                             break;
+                        case TIMER_LIVE: OnLiveTimer(); break;
                     }
                     return IntPtr.Zero;
                 case WM_SHOWPOPUP:
-                    string abbr = typed.ToString();
+                    string abbr = matchAbbr;
+                    if (abbr == null) return IntPtr.Zero;
                     string text = AbbrText(abbr);
                     if (text != null) ShowSuggest(abbr, text);
                     return IntPtr.Zero;
@@ -6811,10 +7410,26 @@ atalhos_data=sim
                 case WM_CLOUDCHECK:
                     OnCloudCheckResult();
                     return IntPtr.Zero;
+                case WM_CLOUDLIVE:
+                    OnLiveIncoming();
+                    return IntPtr.Zero;
                 case WM_CLOUDAUTH:
                     cloudAuthState = wParam.ToInt32();
                     if (hDlg != IntPtr.Zero && cloudAuthWaiting) dlgResult = 100;
                     return IntPtr.Zero;
+                case WM_POPFILTER:
+                {
+                    int code = wParam.ToInt32();
+                    if (code == -9) { ShowNotice("Você ainda não salvou nada nesta posição."); return IntPtr.Zero; }
+                    if (popMode != MODE_HISTORY) return IntPtr.Zero;
+                    if (code == -1) { if (popFilter.Length > 0) popFilter = popFilter.Substring(0, popFilter.Length - 1); }
+                    else if (code == -2) popFilter = "";
+                    else popFilter += (char)code;
+                    popScroll = 0;
+                    RefreshPopupList();
+                    SetTimer(hwndMain, (IntPtr)TIMER_POPUP, 20000, IntPtr.Zero);
+                    return IntPtr.Zero;
+                }
                 case WM_POPSCROLL:
                     if (popMode == MODE_HISTORY) PopupScroll(wParam.ToInt32());
                     return IntPtr.Zero;
@@ -6854,7 +7469,7 @@ atalhos_data=sim
                         GetWindowRect(hwnd, out popDragRect);
                         SetCapture(hwnd);
                     }
-                    else if (popMode == MODE_HISTORY && popNumbered && !OnPopupTrash(lParam) && !OnPopupStar(lParam))
+                    else if (popMode == MODE_HISTORY && popNumbered && popFilter.Length == 0 && !OnPopupTrash(lParam) && !OnPopupStar(lParam))
                     {
                         int pl = PopupLineAt(lParam);
                         if (pl >= 1 && pl - 1 < popClips.Count) // pode virar arraste do item para outra posição
@@ -6970,7 +7585,7 @@ atalhos_data=sim
                             PasteClip(popClips[line - 1], KeyDown(VK_SHIFT)); // Shift+clique: sem formatação
                         }
                     }
-                    else if (mode == MODE_SUGGEST)
+                    else if (mode == MODE_SUGGEST && abbr != null)
                     {
                         string text = AbbrText(abbr);
                         typed.Length = 0;
@@ -7007,10 +7622,20 @@ atalhos_data=sim
     }
 
     // Estrela: fixa ou solta o item na hora.
+    // Fixar: o item sobe e fica logo abaixo do último fixado (ordem de chegada). Soltar: fica onde está.
+    static void PinToEnd(Clip c)
+    {
+        if (c.Pinned) { c.Pinned = false; return; }
+        clips.Remove(c);
+        int last = clips.FindLastIndex(delegate(Clip x) { return x.Pinned; });
+        clips.Insert(last + 1, c);
+        c.Pinned = true;
+    }
+
     static void PopupPin(Clip c)
     {
         PushClipUndo();
-        c.Pinned = !c.Pinned;
+        PinToEnd(c);
         SaveClips();
         RefreshList();
         RefreshPopupList();
@@ -7030,6 +7655,9 @@ atalhos_data=sim
         mi.Add(Item(5, "↓  Descer"));
         mi.Add(Item(6, "⤒  Mover para o topo"));
         mi.Add(Item(7, "⤓  Mover para o fim"));
+        MI conv = Item(9, "↪  Converter em expansão");
+        conv.Off = c.IsImage || c.Empty || c.Text.Length == 0;
+        mi.Add(conv);
         mi.Add(Sep());
         mi.Add(Item(8, "Excluir"));
         IntPtr fg = GetForegroundWindow(); // o programa onde a pessoa está escrevendo
@@ -7052,8 +7680,10 @@ atalhos_data=sim
             case 6: MoveClip(i, 0); break;
             case 7: MoveClip(i, clips.Count); break;
             case 8:
-                popTrashArmed = c; // excluir pelo menu já é a confirmação
                 PopupTrash(c);
+                return;
+            case 9:
+                ConvertToExpansion(c);
                 return;
         }
         RefreshPopupList();
@@ -7089,19 +7719,51 @@ atalhos_data=sim
     // Lixeira: apaga na hora; num clip fixado, pede um segundo clique para confirmar.
     static void PopupTrash(Clip c)
     {
-        if (c.Pinned && popTrashArmed != c)
-        {
-            popTrashArmed = c;
-            InvalidatePopRow(popHover);
-            SetTimer(hwndMain, (IntPtr)TIMER_ARM, 4000, IntPtr.Zero);
-            return;
-        }
         popTrashArmed = null;
+        if (c.Pinned && !c.Empty) { HidePopup(); DeleteClipAsk(c); return; } // fixado: pergunta como fica a numeração
         PushClipUndo();
         clips.Remove(c);
         SaveClips();
         RefreshList();
         RefreshPopupList();
+    }
+
+    // Excluir um clip. Se for fixado e houver itens abaixo, pergunta se puxa os de baixo ou guarda a vaga.
+    static bool DeleteClipAsk(Clip c)
+    {
+        int i = clips.IndexOf(c);
+        if (i < 0) return false;
+        int r = 1;
+        if (c.Pinned && !c.Empty && i < clips.Count - 1)
+        {
+            dlgEscResult = 3;
+            dlgPrimary = 2;
+            dlgRedNote = "Puxar para cima muda o número de todos os itens abaixo (o " + (i + 2) + " vira " + (i + 1) +
+                ", e assim por diante). Se você já decorou as posições, vai precisar decorar de novo — e decorar as posições é a ideia principal do ClipAtalho.";
+            r = AskDialog("Excluir clip fixado", "Excluir o clip da posição " + (i + 1) + ".\nOs itens de baixo sobem para ocupar o lugar, ou a posição fica guardada como vaga livre?",
+                "Puxar para cima", "Manter posições", "Cancelar");
+            dlgRedNote = "";
+            if (r != 1 && r != 2) return false;
+        }
+        PushClipUndo();
+        if (r == 2)
+        {
+            Clip vaga = new Clip("", true);
+            vaga.Empty = true;
+            clips[i] = vaga;
+            mgrSel = vaga;
+        }
+        else
+        {
+            clips.RemoveAt(i);
+            mgrSel = clips.Count == 0 ? null : clips[Math.Min(i, clips.Count - 1)];
+        }
+        editClip = null;
+        if (clips.Count == 0) LoadEdit();
+        SaveClips();
+        RefreshList();
+        RefreshPopupList();
+        return true;
     }
 
     // Linha da lista rápida sob o ponteiro (0 = cabeçalho) ou -1.
@@ -7226,6 +7888,8 @@ atalhos_data=sim
         if (dataMissing) Balloon("ClipAtalho", "A pasta de dados não está acessível agora. Usando os dados da pasta do programa.");
         try { ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072; } catch { } // TLS 1.2
         CloudCheckAsync(); // a nuvem tem uma versão mais nova (de outro computador)?
+        AutoDailyBackup();
+        StartLive();
         if (iniCreated || StartupEnabled()) SetStartup(true); // padrão na 1ª execução; mantém o caminho certo se a pasta mudou
         string first = GetClipboardText();
         if (first != null && first.Trim().Length > 0) AddCopied(first);
@@ -7244,6 +7908,14 @@ atalhos_data=sim
         MSG msg;
         while (GetMessageW(out msg, IntPtr.Zero, 0, 0) > 0)
         {
+            if (msg.message == 0x0100 && hwndMgr != IntPtr.Zero && hDlg == IntPtr.Zero && hMenuWnd == IntPtr.Zero &&
+                (msg.hwnd == hwndMgr || GetParent(msg.hwnd) == hwndMgr))
+            {
+                int k = msg.wParam.ToInt32();
+                if (k == 'F' && KeyDown(0x11) && (page == 0 || page == 1)) { OpenSearch(); continue; } // Ctrl+F
+                if (k == 0x1B && (msg.hwnd == hSearch || msg.hwnd == hXSearch)) { ClearSearch(); continue; } // Esc limpa a busca
+                if (k == 0x0D && (msg.hwnd == hSearch || msg.hwnd == hXSearch)) { SetFocus(msg.hwnd == hSearch ? hList : hXList); continue; }
+            }
             if (msg.message == 0x0100 && hwndMgr != IntPtr.Zero && hDlg == IntPtr.Zero && hMenuWnd == IntPtr.Zero && KeyDown(0x11) &&
                 (msg.wParam.ToInt32() == 'Z' || msg.wParam.ToInt32() == 'Y') && (msg.hwnd == hwndMgr || GetParent(msg.hwnd) == hwndMgr))
             {

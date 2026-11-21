@@ -1,5 +1,5 @@
 ﻿// ClipAtalho - gerenciador de área de transferência portátil + expansão de texto.
-// Versão 1.4.0 17-11-2026. Compilar: dê dois cliques no "Compilar ClipAtalho.bat" (usa o csc.exe que já vem no Windows).
+// Versão 1.5.0 20-11-2026. Compilar: dê dois cliques no "Compilar ClipAtalho.bat" (usa o csc.exe que já vem no Windows).
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -337,12 +337,22 @@ static class ClipAtalho
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern uint DragQueryFileW(IntPtr hDrop, uint index, StringBuilder file, uint cch);
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern bool Shell_NotifyIconW(uint msg, ref NOTIFYICONDATA data);
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct FLASHWINFO { public int cbSize; public IntPtr hwnd; public uint dwFlags, uCount, dwTimeout; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct TRACKMOUSEEVENT { public int cbSize; public uint dwFlags; public IntPtr hwndTrack; public uint dwHoverTime; }
+    [DllImport("user32.dll")] static extern bool FlashWindowEx(ref FLASHWINFO fi);
+    [DllImport("user32.dll")] static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT tme);
+    [DllImport("user32.dll")] static extern IntPtr SetCursor(IntPtr cursor);
+    [DllImport("user32.dll")] static extern bool UpdateWindow(IntPtr hwnd);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern short VkKeyScanW(char ch);
+
     const uint WM_DESTROY = 0x0002, WM_PAINT = 0x000F, WM_MOUSEACTIVATE = 0x0021, WM_KEYDOWN = 0x0100,
         WM_SYSKEYDOWN = 0x0104, WM_TIMER = 0x0113, WM_LBUTTONUP = 0x0202, WM_RBUTTONUP = 0x0205,
         WM_HOTKEY = 0x0312, WM_COMMAND = 0x0111, WM_CLOSE = 0x0010, WM_CLIPBOARDUPDATE = 0x031D,
-        WM_TRAY = 0x8001, WM_SHOWPOPUP = 0x8002, WM_HIDEPOPUP = 0x8003, WM_FEEDBACKDONE = 0x8010, WM_POPSCROLL = 0x8011, WM_CLOUDDONE = 0x8012, WM_CLOUDCHECK = 0x8013, WM_CLOUDAUTH = 0x8014, WM_POPFILTER = 0x8015, WM_CLOUDLIVE = 0x8016;
+        WM_TRAY = 0x8001, WM_SHOWPOPUP = 0x8002, WM_HIDEPOPUP = 0x8003, WM_FEEDBACKDONE = 0x8010, WM_POPSCROLL = 0x8011, WM_CLOUDDONE = 0x8012, WM_CLOUDCHECK = 0x8013, WM_CLOUDAUTH = 0x8014, WM_POPFILTER = 0x8015, WM_CLOUDLIVE = 0x8016, WM_HOTCAP = 0x8017, WM_MOUSEACT = 0x8018, WM_RUNASKS = 0x8019;
     const int TIMER_WAITMODS = 1, TIMER_RESTORE = 2, TIMER_POPUP = 3, TIMER_CONFIG = 4, TIMER_FADE = 5,
-        TIMER_WAVE = 6, TIMER_CLIPREAD = 7, TIMER_ARM = 8, TIMER_CLOUDASK = 9, TIMER_LIVE = 10;
+        TIMER_WAVE = 6, TIMER_CLIPREAD = 7, TIMER_ARM = 8, TIMER_CLOUDASK = 9, TIMER_LIVE = 10, TIMER_BUSY = 11, TIMER_ASKS = 12;
     const uint CF_UNICODETEXT = 13;
     const int VK_BACK = 0x08, VK_TAB = 0x09, VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12,
         VK_ESCAPE = 0x1B, VK_LWIN = 0x5B, VK_RWIN = 0x5C;
@@ -400,7 +410,11 @@ static class ClipAtalho
     static string cfgModsLabel = "Ctrl";
     static bool cfgExpand = true, cfgSaveAll = true, iniCreated, cfgImages = true, cfgListPos;
     static int cfgDateFmt; // 0 = 16/11/2026, 1 = 16-11-2026, 2 = 16112026
-    static bool cfgYear2, cfgAmPm, cfgDateKey = true, cfgDateAbbrDone;
+    static bool cfgYear2, cfgAmPm, cfgDateKey = true, cfgDateAbbrDone, cfgDateAbbr2Done;
+    // Tecla que cola a data de hoje (padrão Ctrl+Alt+D; até a 1.4.0 era Ctrl+Shift+D, que conflita com o CronoShot)
+    const uint DATE_DEF_MODS = 2 | 1, DATE_DEF_VK = 0x44;
+    static uint dateMods = DATE_DEF_MODS, dateVk = DATE_DEF_VK;
+    static bool dateHotSet, dateKeyInIni;
     static readonly string[] DateFmtKeys = { "barra", "hifen", "junto" };
     static readonly string[] MonthNames = { "janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro" };
 
@@ -415,12 +429,13 @@ static class ClipAtalho
         return cfgAmPm ? d.ToString("hh:mm tt", System.Globalization.CultureInfo.InvariantCulture) : d.ToString("HH:mm") + "h";
     }
 
-    // {data} {hora} {datahora} {extenso}: trocados pela data e hora do momento em que se cola.
+    // {data} {ontem} {amanha} {hora} {datahora} {extenso}: trocados pela data e hora do momento em que se cola.
     static string ExpandTokens(string v)
     {
         if (v.IndexOf('{') < 0) return v;
         DateTime n = DateTime.Now;
         return v.Replace("{datahora}", DateStr(n) + " " + HourStr(n)).Replace("{data}", DateStr(n)).Replace("{hora}", HourStr(n))
+            .Replace("{ontem}", DateStr(n.AddDays(-1))).Replace("{amanha}", DateStr(n.AddDays(1))).Replace("{amanhã}", DateStr(n.AddDays(1)))
             .Replace("{extenso}", n.Day + " de " + MonthNames[n.Month - 1] + " de " + n.Year);
     }
     // Limpeza automática: 0 nunca | 1 itens mais antigos que cfgAutoDel minutos | 2 todo dia | 3 toda semana | 4 a cada N horas
@@ -495,14 +510,37 @@ static class ClipAtalho
     static HookProcDelegate mouseProcRef;
     static IntPtr hMouseHook;
 
-    // Clique em qualquer lugar fora da lista rápida (ou da sugestão) fecha a janela.
+    // Gancho do mouse: um clique muda o cursor de lugar (zera o que foi digitado para a expansão),
+    // os botões do meio/laterais podem ter ações e um clique fora da lista rápida (ou da sugestão) a fecha.
     static IntPtr MouseProc(int nCode, IntPtr wParam, IntPtr lParam)
     {
         try
         {
+            uint mm = (uint)wParam.ToInt64();
+            if (nCode == 0 && mm != 0x0200)
+            {
+                if (mm == 0x0201 || mm == 0x0204 || mm == 0x0207 || mm == 0x020B) typed.Length = 0; // o cursor de texto pode ter mudado de lugar
+                if (mouseAct.Count > 0 && (mm == 0x0207 || mm == 0x0208 || mm == 0x020B || mm == 0x020C) && (Marshal.ReadInt32(lParam, 12) & 1) == 0)
+                {
+                    int btn = mm <= 0x0208 ? 0 : (((Marshal.ReadInt32(lParam, 8) >> 16) & 0xFFFF) == 1 ? 1 : 2);
+                    if (mm == 0x0207 || mm == 0x020B)
+                    {
+                        int mi = KeyDown(VK_CONTROL) ? 1 : KeyDown(VK_SHIFT) ? 2 : KeyDown(VK_MENU) ? 3 : 0;
+                        string a = paused || hDlg != IntPtr.Zero ? "" : MouseActOf(btn, mi);
+                        if (a.Length > 0)
+                        {
+                            mouseSwallow[btn] = true;
+                            mouseActPending = a;
+                            PostMessageW(hwndMain, WM_MOUSEACT, IntPtr.Zero, IntPtr.Zero);
+                            return (IntPtr)1; // o programa embaixo não recebe o clique
+                        }
+                    }
+                    else if (mouseSwallow[btn]) { mouseSwallow[btn] = false; return (IntPtr)1; }
+                }
+            }
             if (nCode == 0 && popMode != MODE_NONE && hMenuWnd == IntPtr.Zero)
             {
-                uint m = (uint)wParam.ToInt64();
+                uint m = mm;
                 if (m == 0x020A && popMode == MODE_HISTORY) // roda do mouse sobre a lista: rola
                 {
                     int x0 = Marshal.ReadInt32(lParam), y0 = Marshal.ReadInt32(lParam, 4);
@@ -578,14 +616,18 @@ imagens=sim
 autoexclusao=nunca
 ; Tamanho máximo da lista: 20, 50, 100, 200 ou 0 (sem limite). Imagens: no máximo 100.
 limite=100
-; Data dos atalhos {data} e da tecla Ctrl+Shift+D: barra (16/11/2026), hifen (16-11-2026) ou junto (16112026); ano com 4 ou 2 dígitos
+; Data dos atalhos {data} e da tecla de data: barra (16/11/2026), hifen (16-11-2026) ou junto (16112026); ano com 4 ou 2 dígitos
 data_formato=barra
 ano=4
 ; Hora do atalho {hora}: 24h (23:06h) ou ampm (11:06 PM)
 hora_formato=24h
-; Ctrl+Shift+D cola a data de hoje: sim ou nao
+; Tecla de atalho que cola a data de hoje: sim ou nao, e qual combinação (troque em Configurações › Geral)
 tecla_data=sim
+tecla_data_atalho=Ctrl+Alt+D
 atalhos_data=sim
+atalhos_data2=sim
+; Botões do mouse (meio, voltar, avancar; sozinhos ou com _ctrl, _shift, _alt), ex.: mouse_meio_ctrl=lista
+; Ações: 1 a 9 (colar a posição), lista, semformato, data, x:atalho (colar uma expansão). Sem linha = função normal do mouse.
 
 [atalhos]
 ; atalho=texto   (cadastre e edite pela tela ""Atalhos por Expansão"")
@@ -610,7 +652,8 @@ atalhos_data=sim
         "ATALHOS POR EXPANSÃO\n" +
         "• Cadastre um atalho curto e o texto dele (ex.: bd1 = Bom dia! Tudo bem?).\n" +
         "• Em qualquer programa, digite o atalho logo depois de um espaço: aparece a sugestão. Aperte Tab e o texto entra no lugar. Esc ignora.\n" +
-        "• Já vem com exemplos: hj1 (data de hoje), hr1 (hora), dh1, ext1, b1, bd1, bt1, bn1, obg, agd, att, end1, ia3d e cla.\n\n" +
+        "• Já vem com exemplos: d1 (data de hoje), d0 (ontem), d2 (amanhã), hr1 (hora), dh1, ext1, b1, bd1, bt1, bn1, obg, agd, att, end1, ia3d e cla.\n" +
+        "• Ctrl+Alt+D cola a data de hoje (dá para trocar a tecla em Configurações).\n\n" +
         "ORGANIZAR\n" +
         "• Arraste para reordenar e use o botão direito para mais opções.\n" +
         "• “Salvar” pergunta se é uma alteração ou um item novo.\n" +
@@ -641,7 +684,9 @@ atalhos_data=sim
         new string[] { "end1", "Rua Exemplo, 123 – Apto 45, Bairro Centro – Cidade/UF, CEP 00000-000" },
         new string[] { "ia3d", "Transforme esta foto em uma ilustração 3D no estilo de animação, com cores vibrantes, iluminação suave e fundo desfocado, mantendo as feições e a pose originais." },
         new string[] { "cla", "ClipAtalho: escreva menos e faça mais ⚡" },
-        new string[] { "hj1", "{data}" },
+        new string[] { "d1", "{data}" },
+        new string[] { "d0", "{ontem}" },
+        new string[] { "d2", "{amanha}" },
         new string[] { "hr1", "{hora}" },
         new string[] { "dh1", "{datahora}" },
         new string[] { "ext1", "{extenso}" }
@@ -677,7 +722,7 @@ atalhos_data=sim
     // Grava (ou cria) uma chave do .ini preservando o restante do arquivo.
     static void SetIniValue(string section, string key, string value)
     {
-        if (section == "geral" && !cfgUndoing && key != "lista_pos" && key != "ultima_limpeza" && key != "atalhos_data") PushCfgUndo();
+        if (section == "geral" && !cfgUndoing && key != "lista_pos" && key != "ultima_limpeza" && key != "atalhos_data" && key != "atalhos_data2") PushCfgUndo();
         try
         {
             string text = ReadIni() ?? DefaultIni;
@@ -784,6 +829,12 @@ atalhos_data=sim
         cfgAmPm = false;
         cfgDateKey = true;
         cfgDateAbbrDone = false;
+        cfgDateAbbr2Done = false;
+        dateHotSet = false;
+        dateKeyInIni = false;
+        dateMods = DATE_DEF_MODS;
+        dateVk = DATE_DEF_VK;
+        mouseAct = new Dictionary<string, string>();
         ParseMods("", out cfgMods, out cfgModsLabel);
         string section = "";
         foreach (string rawLine in text.Split('\n'))
@@ -813,8 +864,20 @@ atalhos_data=sim
                 else if (key == "data_formato") cfgDateFmt = Math.Max(0, Array.IndexOf(DateFmtKeys, val.ToLowerInvariant()));
                 else if (key == "ano") cfgYear2 = val.Trim() == "2";
                 else if (key == "hora_formato") cfgAmPm = val.Trim().ToLowerInvariant() == "ampm";
-                else if (key == "tecla_data") cfgDateKey = val.Trim().ToLowerInvariant() != "nao";
+                else if (key == "tecla_data") { cfgDateKey = val.Trim().ToLowerInvariant() != "nao"; dateKeyInIni = true; }
+                else if (key == "tecla_data_atalho")
+                {
+                    uint hm, hv;
+                    if (ParseHotkey(val, out hm, out hv)) { dateMods = hm; dateVk = hv; }
+                    dateHotSet = true;
+                }
                 else if (key == "atalhos_data") cfgDateAbbrDone = val.Trim().ToLowerInvariant() == "sim";
+                else if (key == "atalhos_data2") cfgDateAbbr2Done = val.Trim().ToLowerInvariant() == "sim";
+                else if (key.StartsWith("mouse_"))
+                {
+                    string mv = val.Trim().ToLowerInvariant();
+                    if (mv.Length > 0 && mv != "nada") mouseAct[key] = mv;
+                }
                 else if (key == "ultima_limpeza")
                 {
                     DateTime lt;
@@ -864,10 +927,12 @@ atalhos_data=sim
             {
                 bool loose = key.StartsWith("-"); // "-atalho=texto" = não fixado
                 if (loose) key = key.Substring(1).Trim();
+                string rawLn = rawLine.TrimEnd('\r', '\n').TrimStart().TrimStart((char)0xFEFF);
+                string rawVal = rawLn.IndexOf('=') >= 0 ? rawLn.Substring(rawLn.IndexOf('=') + 1) : val; // mantém espaços no fim do texto
                 if (ValidAbbr(key) && val.Length > 0)
                 {
                     if (!cfgAbbr.ContainsKey(key)) cfgAbbrOrder.Add(key);
-                    cfgAbbr[key] = val.StartsWith("@") ? val : Unescape(val);
+                    cfgAbbr[key] = val.StartsWith("@") ? val : Unescape(rawVal);
                     cfgAbbrLoose.Remove(key);
                     if (loose) cfgAbbrLoose.Add(key);
                 }
@@ -1029,18 +1094,21 @@ atalhos_data=sim
         {
             askingConflict = true;
             try { iniMod = File.GetLastWriteTimeUtc(iniPath); } catch { }
-            dlgEscResult = 1;
-            dlgPrimary = 1;
-            int r = AskDialog("Dados alterados em outro computador",
-                "Os clips/atalhos da pasta de dados foram alterados em outro computador.\nCarregar a versão nova, ou manter a deste computador? (a outra fica guardada como cópia)",
-                "Carregar a nova", "Manter a minha", null);
-            askingConflict = false;
-            if (r == 2 && lastWritten != null)
+            AskLater(delegate // não pula na frente: o ícone pisca e a pergunta aparece quando a pessoa voltar
             {
-                CopyIniAside("outro computador");
-                WriteIni(lastWritten);
-            }
-            else ReloadAll();
+                dlgEscResult = 1;
+                dlgPrimary = 1;
+                int r = AskDialog("Dados alterados em outro computador",
+                    "Os clips/atalhos da pasta de dados foram alterados em outro computador.\nCarregar a versão nova, ou manter a deste computador? (a outra fica guardada como cópia)",
+                    "Carregar a nova", "Manter a minha", null);
+                askingConflict = false;
+                if (r == 2 && lastWritten != null)
+                {
+                    CopyIniAside("outro computador");
+                    WriteIni(lastWritten);
+                }
+                else ReloadAll();
+            });
             return;
         }
         syncHold = true; // decide ao fechar: até lá, nada é gravado na pasta compartilhada
@@ -1113,10 +1181,10 @@ atalhos_data=sim
     {
         for (int i = 1; i <= 30; i++)
             if (registeredOK[i]) { UnregisterHotKey(hwndMain, i); registeredOK[i] = false; }
-        if (cfgDateKey) // Ctrl+Shift+D: cola a data de hoje
+        if (cfgDateKey) // tecla que cola a data de hoje (padrão Ctrl+Alt+D)
         {
-            registeredOK[30] = RegisterHotKey(hwndMain, 30, 2 | 4 | 0x4000, (uint)'D');
-            if (!registeredOK[30]) Log("Ctrl+Shift+D não registrado (usado por outro programa)");
+            registeredOK[30] = RegisterHotKey(hwndMain, 30, dateMods | 0x4000, dateVk);
+            if (!registeredOK[30]) Log(HotkeyLabel(dateMods, dateVk) + " não registrado (usado por outro programa)");
         }
         if ((cfgMods & 4) == 0) // mesma combinação + Shift: cola sem formatação
             for (int d = 1; d <= 9; d++) registeredOK[20 + d] = RegisterHotKey(hwndMain, 20 + d, cfgMods | 4 | 0x4000, (uint)('0' + d));
@@ -1133,6 +1201,603 @@ atalhos_data=sim
         Log("Atalhos " + cfgModsLabel + "+0..9: " + (failed.Count == 0 ? "todos registrados"
             : "NAO registrados: " + string.Join(", ", failed.ToArray()) + " -> usando modo alternativo (gancho de teclado)"));
         SetTip();
+    }
+
+    // ------------------------------------------------------------------ teclas de atalho personalizáveis
+    // Nome de uma tecla no .ini e na tela (ex.: D, 5, F8, Num3, Espaço).
+    static string KeyToken(uint vk)
+    {
+        if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) return ((char)vk).ToString();
+        if (vk >= 0x70 && vk <= 0x87) return "F" + (vk - 0x6F);
+        if (vk >= 0x60 && vk <= 0x69) return "Num" + (vk - 0x60);
+        switch (vk)
+        {
+            case 0x20: return "Espaço";
+            case 0x2D: return "Insert";
+            case 0x2E: return "Delete";
+            case 0x24: return "Home";
+            case 0x23: return "End";
+            case 0x21: return "PageUp";
+            case 0x22: return "PageDown";
+            case 0x25: return "Esquerda";
+            case 0x26: return "Cima";
+            case 0x27: return "Direita";
+            case 0x28: return "Baixo";
+            case 0x2C: return "Print";
+            case 0x13: return "Pause";
+            case 0x0D: return "Enter";
+            case 0x08: return "Backspace";
+            case 0x09: return "Tab";
+            case 0x1B: return "Esc";
+            case 0x6A: return "Num*";
+            case 0x6B: return "NumMais";
+            case 0x6D: return "Num-";
+            case 0x6F: return "Num/";
+        }
+        uint ch = MapVirtualKeyExW(vk, 2, GetKeyboardLayout(0)) & 0x7FFFFFFF;
+        if (ch > 32 && ch != '+' && ch != '=' && ch != ';') return ((char)ch).ToString().ToUpperInvariant();
+        return "VK" + vk.ToString("X2");
+    }
+
+    static uint TokenKey(string t)
+    {
+        if (t.Length == 0) return 0;
+        string u = t.ToUpperInvariant();
+        if (u.Length == 1 && ((u[0] >= 'A' && u[0] <= 'Z') || (u[0] >= '0' && u[0] <= '9'))) return u[0];
+        int n;
+        if (u.Length >= 2 && u[0] == 'F' && int.TryParse(u.Substring(1), out n) && n >= 1 && n <= 24) return (uint)(0x6F + n);
+        if (u.StartsWith("NUM") && u.Length == 4 && char.IsDigit(u[3])) return (uint)(0x60 + (u[3] - '0'));
+        if (u.StartsWith("VK") && u.Length > 2)
+        {
+            try { return Convert.ToUInt32(u.Substring(2), 16); } catch { return 0; }
+        }
+        switch (u)
+        {
+            case "ESPAÇO": case "ESPACO": case "SPACE": return 0x20;
+            case "INSERT": return 0x2D;
+            case "DELETE": case "DEL": return 0x2E;
+            case "HOME": return 0x24;
+            case "END": return 0x23;
+            case "PAGEUP": return 0x21;
+            case "PAGEDOWN": return 0x22;
+            case "ESQUERDA": return 0x25;
+            case "CIMA": return 0x26;
+            case "DIREITA": return 0x27;
+            case "BAIXO": return 0x28;
+            case "PRINT": return 0x2C;
+            case "PAUSE": return 0x13;
+            case "ENTER": return 0x0D;
+            case "BACKSPACE": return 0x08;
+            case "TAB": return 0x09;
+            case "ESC": return 0x1B;
+            case "NUM*": return 0x6A;
+            case "NUMMAIS": return 0x6B;
+            case "NUM-": return 0x6D;
+            case "NUM/": return 0x6F;
+        }
+        if (t.Length == 1)
+        {
+            short sc = VkKeyScanW(t[0]);
+            if (sc != -1) return (uint)(sc & 0xFF);
+        }
+        return 0;
+    }
+
+    static string HotkeyLabel(uint mods, uint vk)
+    {
+        string m = ModsLabel(mods);
+        return (m.Length > 0 ? m + "+" : "") + KeyToken(vk);
+    }
+
+    static bool ParseHotkey(string s, out uint mods, out uint vk)
+    {
+        mods = 0;
+        vk = 0;
+        string[] parts = s.Trim().Split('+');
+        if (parts.Length < 2) return false;
+        for (int i = 0; i < parts.Length - 1; i++)
+        {
+            string t = parts[i].Trim().ToLowerInvariant();
+            if (t == "ctrl" || t == "control") mods |= 2;
+            else if (t == "shift") mods |= 4;
+            else if (t == "alt") mods |= 1;
+            else if (t == "win") mods |= 8;
+            else return false;
+        }
+        vk = TokenKey(parts[parts.Length - 1].Trim());
+        return vk != 0 && (mods & (1 | 2 | 8)) != 0;
+    }
+
+    // O Windows deixa registrar? (se não, outro programa aberto já usa a combinação)
+    static bool TestHotkey(uint mods, uint vk)
+    {
+        bool ok = RegisterHotKey(hwndMain, 99, mods | 0x4000, vk);
+        if (ok) UnregisterHotKey(hwndMain, 99);
+        return ok;
+    }
+
+    // Em teclados com AltGr (ABNT2), Ctrl+Alt = AltGr: a combinação digitaria algum símbolo?
+    static string AltGrChar(uint mods, uint vk)
+    {
+        if ((mods & ~4u) != 3) return null;
+        try
+        {
+            IntPtr hkl = GetKeyboardLayout(0);
+            byte[] st = new byte[256];
+            st[0x11] = 0x80; st[0x12] = 0x80; st[0xA2] = 0x80; st[0xA5] = 0x80;
+            if ((mods & 4) != 0) { st[0x10] = 0x80; st[0xA0] = 0x80; }
+            StringBuilder sb = new StringBuilder(8);
+            int n = ToUnicodeEx(vk, MapVirtualKeyExW(vk, 0, hkl), st, sb, 8, 4, hkl);
+            if (n >= 1 && !char.IsControl(sb[0])) return sb[0].ToString();
+        }
+        catch { }
+        return null;
+    }
+
+    // Atalhos conhecidos do Windows e de programas comuns (o que deixaria de funcionar neles).
+    static Dictionary<string, string> knownKeys;
+    static Dictionary<string, string> KnownHotkeys()
+    {
+        if (knownKeys != null) return knownKeys;
+        Dictionary<string, string> k = new Dictionary<string, string>();
+        string[] ctrl = {
+            "A", "selecionar tudo", "C", "copiar", "V", "colar", "X", "recortar", "Z", "desfazer", "Y", "refazer", "S", "salvar",
+            "P", "imprimir", "F", "localizar", "N", "novo arquivo / nova janela", "O", "abrir arquivo", "W", "fechar aba ou janela",
+            "T", "nova aba no navegador", "B", "negrito", "I", "itálico", "U", "sublinhado", "H", "substituir (Word) e histórico (navegador)",
+            "K", "inserir link", "L", "barra de endereço (navegador) e alinhar à esquerda (Word)", "E", "centralizar (Word)",
+            "R", "atualizar a página (navegador)", "D", "favoritar a página (navegador) e fonte (Word)", "G", "ir para",
+            "J", "downloads (navegador)", "Q", "sair em alguns programas", "M", "nova mensagem em programas de e-mail" };
+        for (int i = 0; i < ctrl.Length; i += 2) k["Ctrl+" + ctrl[i]] = "Ctrl+" + ctrl[i] + " é \"" + ctrl[i + 1] + "\" em quase todos os programas; deixaria de funcionar neles.";
+        k["Ctrl+Shift+D"] = "Ctrl+Shift+D conflita com o CronoShot (captura de tela) e, no Chrome/Edge, é \"favoritar todas as abas\".";
+        k["Ctrl+Alt+D"] = "No Word, Ctrl+Alt+D insere nota de fim; no Word isso deixaria de funcionar.";
+        k["Ctrl+Shift+V"] = "Muitos programas usam Ctrl+Shift+V para colar sem formatação.";
+        k["Ctrl+Shift+T"] = "Navegadores: Ctrl+Shift+T reabre a última aba fechada.";
+        k["Ctrl+Shift+N"] = "Navegadores: janela anônima. Explorador de Arquivos: nova pasta.";
+        k["Ctrl+Shift+P"] = "Firefox: janela privada. VS Code: paleta de comandos.";
+        k["Ctrl+Shift+S"] = "Em muitos programas, Ctrl+Shift+S é \"Salvar como\".";
+        k["Ctrl+Shift+Delete"] = "Navegadores: limpar dados de navegação.";
+        k["Ctrl+Shift+Print"] = "CronoShot: captura com leitura de texto.";
+        k["Ctrl+Shift+C"] = "Navegadores: inspecionar elemento.";
+        k["Ctrl+Shift+B"] = "Navegadores: mostrar/ocultar a barra de favoritos.";
+        k["Ctrl+Shift+Esc"] = "Windows: abre o Gerenciador de Tarefas.";
+        k["Alt+F4"] = "Windows: fecha a janela.";
+        k["Alt+Espaço"] = "Windows: menu da janela (e PowerToys Run, se instalado).";
+        k["Ctrl+F4"] = "Fecha a aba ou o documento em muitos programas.";
+        string[] win = {
+            "D", "mostrar a área de trabalho", "E", "abrir o Explorador de Arquivos", "L", "bloquear o computador", "R", "Executar",
+            "V", "histórico da área de transferência", "I", "Configurações", "S", "pesquisar", "A", "configurações rápidas",
+            "X", "menu de link rápido", "P", "projetar tela", "K", "conectar dispositivos", "H", "ditado por voz", "G", "Xbox Game Bar",
+            "M", "minimizar tudo", "N", "notificações", "W", "widgets", "Tab", "visão de tarefas", "Print", "salvar print na pasta Imagens" };
+        for (int i = 0; i < win.Length; i += 2) k["Win+" + win[i]] = "Windows: Win+" + win[i] + " serve para " + win[i + 1] + "; deixaria de funcionar.";
+        k["Shift+Win+S"] = "Windows: Win+Shift+S abre o recorte de tela.";
+        k["Ctrl+Win+D"] = "Windows: cria uma área de trabalho virtual.";
+        k["Alt+Win+R"] = "Xbox Game Bar: começa/para a gravação de tela.";
+        foreach (string a in new string[] { "Esquerda", "Direita", "Cima", "Baixo" })
+            k["Ctrl+Alt+" + a] = "Em alguns notebooks (vídeo Intel), Ctrl+Alt+setas gira a tela.";
+        knownKeys = k;
+        return k;
+    }
+
+    // Avisos sobre o que a combinação afeta (no próprio ClipAtalho e em outros programas).
+    static List<string> HotkeyWarnings(uint mods, uint vk)
+    {
+        List<string> w = new List<string>();
+        string label = HotkeyLabel(mods, vk);
+        bool digit = (vk >= '0' && vk <= '9') || (vk >= 0x60 && vk <= 0x69);
+        if (digit && (mods == cfgMods || ((cfgMods & 4) == 0 && mods == (cfgMods | 4))))
+            w.Add("• Já é usado pelo próprio ClipAtalho para colar as posições (" + cfgModsLabel + "+1…9).");
+        bool mine = registeredOK[30] && mods == dateMods && vk == dateVk;
+        if (!mine && !TestHotkey(mods, vk))
+            w.Add("• Em uso agora por outro programa aberto: o Windows não deixou o ClipAtalho usar " + label + ".");
+        string ag = AltGrChar(mods, vk);
+        if (ag != null) w.Add("• Em teclados com AltGr (como o ABNT2), Ctrl+Alt equivale ao AltGr: " + label + " deixaria de digitar \"" + ag + "\".");
+        string kt;
+        if (KnownHotkeys().TryGetValue(label, out kt)) w.Add("• " + kt);
+        else if ((mods & 8) != 0) w.Add("• Combinações com Win costumam ser do próprio Windows; alguma função dele pode deixar de funcionar.");
+        return w;
+    }
+
+    // Avisos ao trocar as teclas que, com os números, colam as posições.
+    static List<string> PositionWarnings(uint mods)
+    {
+        List<string> w = new List<string>();
+        string ml = ModsLabel(mods);
+        bool ourShift = (cfgMods & 4) == 0 && mods == (cfgMods | 4); // essas combinações hoje são o "sem formatação" do próprio ClipAtalho
+        int busy = 0;
+        if (!ourShift)
+            for (int d = 0; d <= 9; d++) if (!TestHotkey(mods, (uint)('0' + d))) busy++;
+        if (busy > 0) w.Add("• " + busy + (busy == 1 ? " dessas combinações já está" : " dessas combinações já estão") +
+            " em uso por outro programa aberto; o ClipAtalho passa na frente dele (modo alternativo).");
+        if ((mods & ~4u) == 3)
+        {
+            List<string> syms = new List<string>();
+            for (int d = 0; d <= 9; d++) { string c = AltGrChar(mods, (uint)('0' + d)); if (c != null) syms.Add(c); }
+            if (syms.Count > 0) w.Add("• Em teclados com AltGr (como o ABNT2), Ctrl+Alt equivale ao AltGr: deixaria de digitar " + string.Join(" ", syms.ToArray()) + ".");
+        }
+        if (mods == 2) w.Add("• Navegadores (Chrome, Edge, Firefox): Ctrl+1…9 troca de aba. Excel: Ctrl+1 abre \"Formatar células\".");
+        if (mods == (2 | 4)) w.Add("• Excel: Ctrl+Shift+1…6 aplica formatos de número (moeda, porcentagem, data…).");
+        if (mods == 1) w.Add("• Alt + números do teclado numérico digita símbolos (Alt+0169 = ©); isso deixaria de funcionar.");
+        if (mods == 8) w.Add("• Windows: Win+1…9 abre os programas fixados na barra de tarefas; isso deixaria de funcionar.");
+        else if ((mods & 8) != 0) w.Add("• Combinações com Win costumam ser do próprio Windows; alguma função dele pode deixar de funcionar.");
+        if ((mods & 4) != 0) w.Add("• Com Shift no atalho, a colagem sem formatação (" + ml + "+Shift+número) fica desligada.");
+        return w;
+    }
+
+    static bool hotCapture;
+    static uint capMods, capVk;
+
+    // Botão "trocar…" da tecla de data: a pessoa aperta a combinação e vê os avisos antes de salvar.
+    static void ChangeDateHotkey()
+    {
+        while (true)
+        {
+            hotCapture = true;
+            capVk = 0;
+            dlgEscResult = 2;
+            dlgPrimary = 2;
+            int r;
+            try
+            {
+                r = AskDialog("Trocar o atalho da data",
+                    "Aperte agora, no teclado, a combinação que vai colar a data de hoje.\nEla precisa ter Ctrl, Alt ou Win (ex.: Ctrl+Alt+D).\nAtual: " +
+                    HotkeyLabel(dateMods, dateVk) + "   ·   Esc cancela.", "Restaurar padrão (Ctrl+Alt+D)", "Cancelar", null);
+            }
+            finally { hotCapture = false; }
+            uint nm, nv;
+            if (r == 1) { nm = DATE_DEF_MODS; nv = DATE_DEF_VK; }
+            else if (r == 100) { nm = capMods; nv = capVk; }
+            else return;
+            if ((nm & (1 | 2 | 8)) == 0)
+            {
+                Info(HotkeyLabel(nm, nv) + " não serve: a combinação precisa ter Ctrl, Alt ou Win, senão atrapalharia a digitação.\nTente de novo.");
+                continue;
+            }
+            if (nm == dateMods && nv == dateVk && (registeredOK[30] || !cfgDateKey))
+            {
+                if (!cfgDateKey) { SetIniValue("geral", "tecla_data", "sim"); LoadConfig(); RepaintAll(); }
+                return;
+            }
+            List<string> warn = HotkeyWarnings(nm, nv);
+            if (warn.Count > 0)
+            {
+                dlgRedNote = string.Join("\n", warn.ToArray());
+                dlgWarn = true;
+                dlgEscResult = 3;
+                dlgPrimary = 2;
+                int a = AskDialog("Usar " + HotkeyLabel(nm, nv) + "?", "Atalho escolhido para colar a data de hoje: " + HotkeyLabel(nm, nv) +
+                    ".\nVeja abaixo o que ele afeta:", "Usar mesmo assim", "Escolher outra", "Cancelar");
+                dlgRedNote = "";
+                dlgWarn = false;
+                if (a == 2) continue;
+                if (a != 1) return;
+            }
+            SetIniValue("geral", "tecla_data_atalho", HotkeyLabel(nm, nv));
+            if (!cfgDateKey) SetIniValue("geral", "tecla_data", "sim");
+            LoadConfig();
+            RepaintAll();
+            if (!registeredOK[30]) Info("O Windows não deixou usar " + HotkeyLabel(nm, nv) + " agora (outro programa aberto usa essa combinação).");
+            return;
+        }
+    }
+
+    // Quem usava a 1.4.0 (Ctrl+Shift+D) escolhe na primeira abertura: muda para Ctrl+Alt+D ou mantém.
+    static void DateKeyMigration()
+    {
+        if (dateHotSet) return;
+        if (!dateKeyInIni || !cfgDateKey) // nunca teve (ou desligou) a tecla de data: só passa a valer o padrão novo
+        {
+            cfgUndoing = true;
+            try { SetIniValue("geral", "tecla_data_atalho", "Ctrl+Alt+D"); }
+            finally { cfgUndoing = false; }
+            LoadConfig();
+            return;
+        }
+        AskLater(delegate
+        {
+            if (dateHotSet) return;
+            dlgEscResult = 1;
+            dlgPrimary = 1;
+            dlgRedNote = "Atenção: o Ctrl+Shift+D conflita com o CronoShot (captura de tela) e, no Chrome/Edge, é \"favoritar todas as abas\".";
+            int r = AskDialog("Novo atalho para colar a data",
+                "O atalho que cola a data de hoje passou a ser Ctrl+Alt+D (antes era Ctrl+Shift+D).\nDá para trocar quando quiser em Configurações › Geral.",
+                "Mudar para Ctrl+Alt+D", "Manter Ctrl+Shift+D", null);
+            dlgRedNote = "";
+            cfgUndoing = true;
+            try { SetIniValue("geral", "tecla_data_atalho", r == 2 ? "Ctrl+Shift+D" : "Ctrl+Alt+D"); }
+            finally { cfgUndoing = false; }
+            LoadConfig();
+            RepaintAll();
+        });
+    }
+
+    // ------------------------------------------------------------------ botões do mouse (meio e laterais, sozinhos ou com Ctrl/Shift/Alt)
+    static Dictionary<string, string> mouseAct = new Dictionary<string, string>();
+    static readonly string[] MouseBtnKeys = { "meio", "voltar", "avancar" };
+    static readonly string[] MouseBtnNames = { "Botão do meio (rodinha)", "Botão lateral de voltar", "Botão lateral de avançar" };
+    static readonly string[] MouseModKeys = { "", "_ctrl", "_shift", "_alt" };
+    static readonly string[] MouseModNames = { "", "Ctrl + ", "Shift + ", "Alt + " };
+    static bool[] mouseSwallow = new bool[3];
+    static string mouseActPending;
+
+    static string MouseKey(int b, int mi) { return "mouse_" + MouseBtnKeys[b] + MouseModKeys[mi]; }
+    static string MouseActOf(int b, int mi) { string v; return mouseAct.TryGetValue(MouseKey(b, mi), out v) ? v : ""; }
+
+    static string MouseActLabel(string a)
+    {
+        int n;
+        if (a == "lista") return "abrir a lista (" + cfgModsLabel + "+0)";
+        if (a == "semformato") return "colar sem formatação";
+        if (a == "data") return "colar a data de hoje";
+        if (a.StartsWith("x:")) return "colar a expansão \"" + a.Substring(2) + "\"";
+        if (int.TryParse(a, out n) && n >= 1 && n <= 9) return "colar a posição " + n;
+        return "normal (sem ação)";
+    }
+
+    static void RunMouseAction(string a)
+    {
+        if (a == null || paused) return;
+        if (a == "lista") { if (popMode == MODE_HISTORY) HidePopup(); else ShowHistory(); return; }
+        HidePopup();
+        int n;
+        if (int.TryParse(a, out n) && n >= 1 && n <= 9)
+        {
+            if (n - 1 < clips.Count) PasteClip(clips[n - 1]);
+            else ShowNotice("Você ainda não salvou nada nesta posição.");
+        }
+        else if (a == "semformato")
+        {
+            string t = GetClipboardText();
+            if (t == null || t.Length == 0) ShowNotice("Não há texto copiado para colar.");
+            else StartPaste(t, 0);
+        }
+        else if (a == "data") StartPaste(DateStr(DateTime.Now), 0);
+        else if (a.StartsWith("x:"))
+        {
+            string t = AbbrText(a.Substring(2));
+            if (t == null) ShowNotice("A expansão \"" + a.Substring(2) + "\" não existe mais.");
+            else StartPaste(t, 0);
+        }
+    }
+
+    static void MouseMenu()
+    {
+        RECT r;
+        GetWindowRect(GetDlgItem(hwndMgr, IDC_MOUSEBTN), out r);
+        List<MI> mi = new List<MI>();
+        for (int b = 0; b < 3; b++)
+        {
+            if (b > 0) mi.Add(Sep());
+            for (int m = 0; m < 4; m++)
+            {
+                string a = MouseActOf(b, m);
+                MI it = Item(1 + b * 4 + m, MouseModNames[m] + MouseBtnNames[b] + ":  " + MouseActLabel(a));
+                it.Check = a.Length > 0;
+                mi.Add(it);
+            }
+        }
+        if (mouseAct.Count > 0) { mi.Add(Sep()); mi.Add(Item(99, "Desligar todos (voltar ao normal)")); }
+        int cmd = ShowMenu(mi, r.Left, r.Bottom + Px(4), hwndMgr);
+        if (cmd < 1) return;
+        if (cmd == 99)
+        {
+            foreach (string k in new List<string>(mouseAct.Keys)) SetIniValue("geral", k, "nada");
+            LoadConfig();
+            RepaintAll();
+            return;
+        }
+        int bi = (cmd - 1) / 4, mo = (cmd - 1) % 4;
+        string cur = MouseActOf(bi, mo);
+        List<MI> acts = new List<MI>();
+        MI none = Item(1, "Normal (sem ação: o botão funciona como sempre)"); none.Check = cur.Length == 0; acts.Add(none);
+        MI li = Item(2, "Abrir a lista (" + cfgModsLabel + "+0)"); li.Check = cur == "lista"; acts.Add(li);
+        acts.Add(Sep());
+        for (int n = 1; n <= 9; n++) { MI p = Item(10 + n, "Colar a posição " + n); p.Check = cur == n.ToString(); acts.Add(p); }
+        acts.Add(Sep());
+        MI sf = Item(3, "Colar sem formatação (o último texto copiado)"); sf.Check = cur == "semformato"; acts.Add(sf);
+        MI dt = Item(4, "Colar a data de hoje"); dt.Check = cur == "data"; acts.Add(dt);
+        MI ex = Item(5, "Colar uma expansão…" + (cur.StartsWith("x:") ? "  (" + cur.Substring(2) + ")" : "")); ex.Check = cur.StartsWith("x:"); acts.Add(ex);
+        int ac = ShowMenu(acts, r.Left, r.Bottom + Px(4), hwndMgr);
+        if (ac < 1) return;
+        string val = ac == 1 ? "nada" : ac == 2 ? "lista" : ac == 3 ? "semformato" : ac == 4 ? "data" : ac >= 11 ? (ac - 10).ToString() : null;
+        if (ac == 5)
+        {
+            string t = InputDialog("Colar uma expansão", "Digite o atalho da expansão que este botão vai colar (ex.: bd1):", cur.StartsWith("x:") ? cur.Substring(2) : "");
+            if (t == null) return;
+            t = t.Trim().ToLowerInvariant();
+            if (!cfgAbbr.ContainsKey(t)) { Info("Não existe expansão com o atalho \"" + t + "\". Confira na tela Atalhos por Expansão."); return; }
+            val = "x:" + t;
+        }
+        if (val == null) return;
+        if (val != "nada" && cur.Length == 0) // ligando: avisa o que o botão deixa de fazer
+        {
+            string combo = MouseModNames[mo] + MouseBtnNames[bi];
+            string note = mo == 0
+                ? (bi == 0 ? "Atenção: o clique do meio deixará de funcionar normalmente em todos os programas: abrir link em nova aba, fechar aba no navegador e rolar a página com a rodinha pressionada."
+                    : bi == 1 ? "Atenção: o botão de voltar deixará de voltar a página no navegador e no Explorador de Arquivos (e de funcionar em jogos que o usam)."
+                    : "Atenção: o botão de avançar deixará de avançar a página no navegador e no Explorador de Arquivos (e de funcionar em jogos que o usam).")
+                : "Atenção: programas que usam " + combo.ToLowerInvariant() + " (editores de imagem e 3D, CAD, jogos) deixarão de receber essa combinação.";
+            dlgRedNote = note;
+            dlgEscResult = 2;
+            dlgPrimary = 1;
+            int ok = AskDialog("Botões do mouse", combo + "  →  " + MouseActLabel(val) + "\nVale em todos os programas enquanto o ClipAtalho estiver aberto (e não estiver pausado).",
+                "Usar assim", "Cancelar", null);
+            dlgRedNote = "";
+            if (ok != 1) return;
+        }
+        SetIniValue("geral", MouseKey(bi, mo), val);
+        LoadConfig();
+        RepaintAll();
+    }
+
+    // ------------------------------------------------------------------ perguntas automáticas sem roubar o foco
+    // Em vez de pular na frente do que a pessoa está fazendo, o ícone do ClipAtalho pisca na barra de tarefas;
+    // a pergunta aparece quando ela voltar para a janela do programa.
+    static List<Action> laterAsks = new List<Action>();
+    static bool asksFlashed;
+
+    static void AskLater(Action a)
+    {
+        laterAsks.Add(a);
+        if (hwndMain != IntPtr.Zero) PostMessageW(hwndMain, WM_RUNASKS, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    static bool MgrInFront()
+    {
+        return hwndMgr != IntPtr.Zero && IsWindowVisible(hwndMgr) && !IsIconic(hwndMgr) && GetForegroundWindow() == hwndMgr;
+    }
+
+    static void FlashMgr()
+    {
+        if (asksFlashed && hwndMgr != IntPtr.Zero && IsWindowVisible(hwndMgr)) return;
+        if (hwndMgr == IntPtr.Zero) CreateManager();
+        if (hwndMgr == IntPtr.Zero) return;
+        if (!IsWindowVisible(hwndMgr))
+        {
+            editClip = null;
+            editDirty = false;
+            ShowPage(0);
+            ShowWindow(hwndMgr, 7); // SW_SHOWMINNOACTIVE: aparece minimizada na barra de tarefas, sem tirar o foco
+        }
+        FLASHWINFO f = new FLASHWINFO();
+        f.cbSize = Marshal.SizeOf(typeof(FLASHWINFO));
+        f.hwnd = hwndMgr;
+        f.dwFlags = 2 | 12; // FLASHW_TRAY | FLASHW_TIMERNOFG: pisca até a janela vir para a frente
+        FlashWindowEx(ref f);
+        asksFlashed = true;
+    }
+
+    static void RunAsks()
+    {
+        KillTimer(hwndMain, (IntPtr)TIMER_ASKS);
+        if (laterAsks.Count == 0) return;
+        if (hDlg != IntPtr.Zero || hMenuWnd != IntPtr.Zero || cloudBusy) { SetTimer(hwndMain, (IntPtr)TIMER_ASKS, 1500, IntPtr.Zero); return; }
+        if (!MgrInFront()) { FlashMgr(); return; }
+        asksFlashed = false;
+        Action a = laterAsks[0];
+        laterAsks.RemoveAt(0);
+        try { a(); } catch (Exception e) { Log("Pergunta adiada falhou: " + e.Message); }
+        if (laterAsks.Count > 0) PostMessageW(hwndMain, WM_RUNASKS, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    // ------------------------------------------------------------------ janelinha "Aguarde…" (ações demoradas)
+    static IntPtr hwndBusy;
+    static WndProcDelegate busyProcRef;
+    static string busyText = "";
+    static int busyFrame, busyState; // 0 trabalhando, 1 concluído
+
+    static void BusyShow(string text)
+    {
+        busyText = text;
+        busyState = 0;
+        busyFrame = 0;
+        if (hwndBusy == IntPtr.Zero)
+            hwndBusy = CreateWindowExW(0x8 | 0x80 | 0x08000000, "ClipAtalhoBusy", "", 0x80000000, 0, 0, 10, 10, IntPtr.Zero, IntPtr.Zero, hInst, IntPtr.Zero);
+        if (hwndBusy == IntPtr.Zero) return;
+        int w = Px(340), h = Px(64), x, y;
+        RECT o;
+        if (MgrInFront() && GetWindowRect(hwndMgr, out o)) // janela do programa em uso: no meio dela
+        {
+            x = o.Left + (o.Right - o.Left - w) / 2;
+            y = o.Top + (o.Bottom - o.Top - h) / 2;
+        }
+        else // em segundo plano: perto do relógio
+        {
+            POINT corner = new POINT();
+            corner.X = GetSystemMetrics(0) - 1;
+            corner.Y = GetSystemMetrics(1) - 1;
+            RECT work = new RECT();
+            work.Right = GetSystemMetrics(0);
+            work.Bottom = GetSystemMetrics(1);
+            MONITORINFO mi = new MONITORINFO();
+            mi.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+            if (GetMonitorInfoW(MonitorFromPoint(corner, 1), ref mi)) work = mi.rcWork;
+            x = work.Right - w - Px(14);
+            y = work.Bottom - h - Px(14);
+        }
+        SetWindowPos(hwndBusy, (IntPtr)(-1), x, y, w, h, 0x10 | 0x40); // no topo, sem ativar
+        RoundWindow(hwndBusy, w, h);
+        InvalidateRect(hwndBusy, IntPtr.Zero, false);
+        UpdateWindow(hwndBusy);
+        SetTimer(hwndMain, (IntPtr)TIMER_BUSY, 90, IntPtr.Zero);
+    }
+
+    static void BusyDone(string text)
+    {
+        if (hwndBusy == IntPtr.Zero || !IsWindowVisible(hwndBusy)) return;
+        busyState = 1;
+        busyText = text;
+        InvalidateRect(hwndBusy, IntPtr.Zero, false);
+        UpdateWindow(hwndBusy);
+        KillTimer(hwndMain, (IntPtr)TIMER_BUSY);
+        SetTimer(hwndMain, (IntPtr)TIMER_BUSY, 1300, IntPtr.Zero);
+    }
+
+    static void BusyHide()
+    {
+        KillTimer(hwndMain, (IntPtr)TIMER_BUSY);
+        if (hwndBusy != IntPtr.Zero) ShowWindow(hwndBusy, 0);
+    }
+
+    static void OnBusyTimer()
+    {
+        if (busyState != 0) { BusyHide(); return; }
+        busyFrame++;
+        if (hwndBusy != IntPtr.Zero) InvalidateRect(hwndBusy, IntPtr.Zero, false);
+    }
+
+    static IntPtr BusyProc(IntPtr hwnd, uint m, IntPtr wParam, IntPtr lParam)
+    {
+        try
+        {
+            switch (m)
+            {
+                case 0x0014: return (IntPtr)1; // WM_ERASEBKGND
+                case WM_MOUSEACTIVATE: return (IntPtr)3; // MA_NOACTIVATE
+                case 0x0020: // WM_SETCURSOR: ampulheta
+                    SetCursor(LoadCursorW(IntPtr.Zero, (IntPtr)(busyState == 0 ? 32514 : 32512)));
+                    return (IntPtr)1;
+                case WM_PAINT:
+                {
+                    PAINTSTRUCT ps;
+                    IntPtr hdc = BeginPaint(hwnd, out ps);
+                    int w = Px(340), h = Px(64);
+                    IntPtr mem = CreateCompatibleDC(hdc), bmp = CreateCompatibleBitmap(hdc, w, h), old = SelectObject(mem, bmp);
+                    RECT all = new RECT();
+                    all.Right = w;
+                    all.Bottom = h;
+                    FillRect(mem, ref all, hWhiteBrush);
+                    int cx = Px(32), cy = h / 2;
+                    if (busyState == 0) // bolinhas girando
+                    {
+                        for (int i = 0; i < 8; i++)
+                        {
+                            double ang = i * Math.PI / 4 - Math.PI / 2;
+                            int dx = cx + (int)(Math.Cos(ang) * Px(11)), dy = cy + (int)(Math.Sin(ang) * Px(11));
+                            int lag = ((busyFrame % 8) - i + 8) % 8;
+                            uint c = lag == 0 ? A_ACCENT : lag == 1 ? ((A_ACCENT & 0x00FFFFFF) | 0xAA000000) : lag == 2 ? ((A_ACCENT & 0x00FFFFFF) | 0x66000000) : A_BTNBORDER;
+                            RoundRect(mem, dx - Px(3), dy - Px(3), Px(6), Px(6), Px(3), c, 0);
+                        }
+                        DrawTextAt(mem, "Aguarde…", hUiBold, C_TEXT, Px(60), Px(10), w - Px(12), Px(32), 0x8024);
+                        DrawTextAt(mem, busyText, hSmallFont, C_GRAY, Px(60), Px(32), w - Px(12), Px(54), 0x8024);
+                    }
+                    else
+                    {
+                        RoundRect(mem, cx - Px(13), cy - Px(13), Px(26), Px(26), Px(13), A_ACCENT, 0);
+                        DrawTextAt(mem, "", hIconFont, C_WHITE, cx - Px(13), cy - Px(13), cx + Px(13), cy + Px(13), 0x25);
+                        DrawTextAt(mem, busyText, hUiBold, C_ACCENT, Px(60), 0, w - Px(12), h, 0x8024);
+                    }
+                    RoundRect(mem, 0, 0, w, h, Px(WIN_R), 0, A_BTNBORDER);
+                    BitBlt(hdc, 0, 0, w, h, mem, 0, 0, 0x00CC0020);
+                    SelectObject(mem, old);
+                    DeleteObject(bmp);
+                    DeleteDC(mem);
+                    EndPaint(hwnd, ref ps);
+                    return IntPtr.Zero;
+                }
+            }
+        }
+        catch { }
+        return DefWindowProcW(hwnd, m, wParam, lParam);
     }
 
     // ------------------------------------------------------------------ lista de clips
@@ -2242,6 +2907,53 @@ atalhos_data=sim
     static int PopRowTop(int i) { return Px(8) + (i == 0 ? 0 : i - popScroll) * Px(POP_ROW); }
     static bool PopRowVisible(int i) { return i == 0 || (i > popScroll && i <= popScroll + PopVisible()); }
 
+    static int popBarHover; // 0 fora, 1 no trilho, 2 sobre a barrinha
+    static bool popBarDrag;
+    static int popBarY0, popBarS0;
+
+    static bool PopBarGeom(out int trackTop, out int track, out int th, out int ty)
+    {
+        int total = popLines.Count - 1, vis = PopVisible();
+        trackTop = Px(8 + POP_ROW);
+        track = vis * Px(POP_ROW);
+        th = 0;
+        ty = 0;
+        if (popMode != MODE_HISTORY || !popNumbered || total <= vis) return false;
+        th = Math.Max(Px(24), track * vis / total);
+        ty = trackTop + (track - th) * popScroll / Math.Max(1, total - vis);
+        return true;
+    }
+
+    static int PopBarHit(IntPtr lParam)
+    {
+        int x = (short)(lParam.ToInt64() & 0xFFFF), y = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
+        int tt, tr, th, ty;
+        if (!PopBarGeom(out tt, out tr, out th, out ty)) return 0;
+        if (x < Px(540) - Px(18) || y < tt || y >= tt + tr) return 0;
+        return (y >= ty && y < ty + th) ? 2 : 1;
+    }
+
+    static void InvalidatePopBar()
+    {
+        RECT r = new RECT();
+        r.Left = Px(540) - Px(20);
+        r.Right = Px(540);
+        r.Top = 0;
+        r.Bottom = PopupHeight();
+        InvalidateRectArea(hwndPopup, ref r, false);
+    }
+
+    // Leva a barrinha para a posição do ponteiro (arrastando ou clicando no trilho).
+    static void PopBarTo(int y, bool fromDrag)
+    {
+        int tt, tr, th, ty;
+        if (!PopBarGeom(out tt, out tr, out th, out ty)) return;
+        int total = popLines.Count - 1, vis = PopVisible(), range = Math.Max(1, tr - th);
+        int ns = fromDrag ? popBarS0 + (int)Math.Round((double)(y - popBarY0) * (total - vis) / range)
+            : (int)Math.Round((double)(y - tt - th / 2) * (total - vis) / range);
+        PopupScroll(ns - popScroll);
+    }
+
     static void PopupScroll(int rows)
     {
         int max = Math.Max(0, popLines.Count - 1 - PopVisible());
@@ -2427,11 +3139,11 @@ atalhos_data=sim
         IDC_UNDO = 192, IDC_REDO = 193, IDC_XUNDO = 194, IDC_XREDO = 195, IDC_CUNDO = 196, IDC_CREDO = 197, IDC_LIMIT = 198, IDC_IN_EDIT = 214,
         IDC_SEG3 = 220, IDC_CLOUDPROV = 221, IDC_CLOUDCONN = 222, IDC_CLOUDUP = 223, IDC_CLOUDDOWN = 224, IDC_CLOUDMODE = 225,
         IDC_T_CLOUDCHECK = 226, IDC_DATEFMT = 227, IDC_YEARFMT = 228, IDC_T_DATEKEY = 229, IDC_HOURFMT = 230,
-        IDC_SEARCH = 231, IDC_XSEARCH = 232, IDC_TOEXP = 233, IDC_GOCLOUD = 234, IDC_T_CLOUDLIVE = 235, IDC_T_CLOUDLIVEIMG = 236,
+        IDC_SEARCH = 231, IDC_XSEARCH = 232, IDC_TOEXP = 233, IDC_GOCLOUD = 234, IDC_T_CLOUDLIVE = 235, IDC_T_CLOUDLIVEIMG = 236, IDC_DATEHOT = 237, IDC_MOUSEBTN = 238,
         IDC_FB_SUG = 210, IDC_FB_REC = 211, IDC_FB_MAIL = 212, IDC_FB_MSG = 213;
     const string RUNKEY = @"Software\Microsoft\Windows\CurrentVersion\Run";
     const string INSTAGRAM = "https://www.instagram.com/talespsg";
-    const string VERSION = "1.4.0 17-11-2026";
+    const string VERSION = "1.5.0 20-11-2026";
     static readonly string[] PageTitles = { "Seus clips", "Atalhos por Expansão", "Configurações", "Ajuda", "Configurações", "Configurações" };
     static readonly string[] ModNames = { "Ctrl", "Shift", "Alt", "Win" };
     static readonly uint[] ModBits = { 2, 4, 1, 8 };
@@ -2543,11 +3255,13 @@ atalhos_data=sim
         Btn(36, 288, 740, 30, IDC_T_SAVEALL, 2);
         Btn(36, 320, 740, 30, IDC_T_EXPAND, 2);
         Btn(36, 352, 740, 30, IDC_T_IMAGES, 2);
-        Btn(36, 384, 740, 30, IDC_T_DATEKEY, 2);
+        Btn(36, 384, 420, 30, IDC_T_DATEKEY, 2);
+        Btn(464, 384, 312, 30, IDC_DATEHOT, 2);
         Btn(96, 422, 196, 30, IDC_DATEFMT, 2);
         Btn(300, 422, 230, 30, IDC_YEARFMT, 2);
         Btn(36, 462, 170, 30, IDC_OPENINI, 2);
         Btn(214, 462, 210, 30, IDC_OPENDIR, 2);
+        Btn(432, 462, 344, 30, IDC_MOUSEBTN, 2);
         Btn(452, 46, 92, 28, IDC_SEG, 24);       // Configurações: "Geral" | "Dados e backup" | "Nuvem"
         Btn(550, 46, 140, 28, IDC_SEG + 1, 24);
         Btn(696, 46, 108, 28, IDC_SEG3, 24);
@@ -2952,7 +3666,8 @@ atalhos_data=sim
             "•  Cadastre na tela \"Atalhos por Expansão\": um atalho curto (ex.: bn1) e o texto correspondente (ex.: Boa noite. Tudo bem?).\n" +
             "•  Em qualquer programa, digite o atalho: aparece uma sugestão com o texto. Aperte Tab para inserir — o atalho digitado é apagado e o texto entra no lugar.\n" +
             "•  Esc ignora a sugestão; continuar digitando também a descarta.\n" +
-            "•  O atalho só pode ter letras sem acento e números, e deve ser digitado \"solto\": logo depois de um espaço, Enter ou pontuação.\n" +
+            "•  O atalho pode ter letras, números, símbolos e espaço, e deve ser digitado \"solto\": logo depois de um espaço, Enter, pontuação ou de um clique no lugar onde vai escrever.\n" +
+            "•  O texto guarda tudo, inclusive espaços e quebras de linha no fim.\n" +
             "•  A lista de atalhos se organiza como a de clips: arrastar com o mouse, setas ↑ ↓, botão direito, fixar/soltar e \"Limpar não fixados\" (apaga só os atalhos que você soltou).\n" +
             "•  \"Salvar Novo\": grava o que está nos campos como um atalho novo (com outro nome), sem alterar o atalho que você abriu. O \"Salvar\" também pergunta se é alteração ou atalho novo.\n" +
             "•  Desfazer / refazer: botões ↶ ↷ ou Ctrl+Z / Ctrl+Y, como na tela de clips.\n" +
@@ -2960,7 +3675,9 @@ atalhos_data=sim
             "•  \"Reorganizar lista\": por data de criação (mais antigos ou mais recentes), A → Z, Z → A ou agrupando famílias (atalhos com o mesmo começo, como end1…end7 ou prst, prdbz1, pr3d). Dá para desfazer a última reorganização.\n" +
             "•  Para funcionar, a opção \"Expansão de texto\" precisa estar ligada em Configurações.\n\n" +
             "CONFIGURAÇÕES\n" +
-            "•  Teclas do atalho: troque Ctrl por outra combinação (por exemplo Ctrl+Shift) se o atalho atrapalhar outro programa. Enquanto o ClipAtalho está aberto, o atalho escolhido deixa de valer nos outros programas (Ctrl+1, por exemplo, é \"Formatar células\" no Excel).\n" +
+            "•  Teclas do atalho: troque Ctrl por outra combinação (por exemplo Ctrl+Shift) se o atalho atrapalhar outro programa. Enquanto o ClipAtalho está aberto, o atalho escolhido deixa de valer nos outros programas (Ctrl+1, por exemplo, é \"Formatar células\" no Excel). Antes de trocar, o programa mostra em vermelho o que a combinação nova afeta (outro programa aberto que já a usa, atalhos conhecidos do Windows, Office e navegadores, e o AltGr dos teclados ABNT2).\n" +
+            "•  Tecla da data: Ctrl+Alt+D cola a data de hoje (padrão). Em \"trocar…\", aperte a combinação que quiser; os mesmos avisos aparecem antes de salvar.\n" +
+            "•  Botões do mouse: o botão do meio e os laterais (voltar/avançar), sozinhos ou com Ctrl, Shift ou Alt, podem colar uma posição (1 a 9), abrir a lista, colar sem formatação, colar a data ou colar uma expansão. Vem desligado; o botão esquerdo e o direito não mudam.\n" +
             "•  Iniciar junto com o Windows.\n" +
             "•  Guardar também os clips não fixados.\n" +
             "•  Ligar ou desligar a expansão de texto.\n" +
@@ -2979,18 +3696,20 @@ atalhos_data=sim
             "NUVEM (Configurações › Nuvem)\n" +
             "•  Leve clips, imagens, atalhos e configurações para outro computador: \"Enviar para a nuvem\" num computador e \"Baixar da nuvem\" no outro. Antes de substituir, o programa mostra a data, a hora e o computador do backup que já está lá.\n" +
             "•  Onde guardar: OneDrive, direto pela internet, sem instalar nada (o login é feito uma vez, na página da Microsoft, e o ClipAtalho só enxerga a própria pasta Aplicativos › ClipAtalho), ou uma pasta do Google Drive, Dropbox, rede ou pendrive.\n" +
-            "•  Depois de alterar algo, o programa pergunta se deseja enviar (ou envia sozinho, se preferir). Ao abrir, avisa se outro computador enviou uma versão mais nova.\n\n" +
+            "•  Depois de alterar algo, o programa pergunta se deseja enviar (ou envia sozinho, se preferir). Ao abrir, avisa se outro computador enviou uma versão mais nova.\n" +
+            "•  Essas perguntas não pulam na frente do que você está fazendo: o ícone do ClipAtalho pisca na barra de tarefas e a pergunta aparece quando você voltar para ele. Enquanto envia ou baixa, aparece a janelinha \"Aguarde…\" (perto do relógio, se você estiver em outro programa).\n\n" +
             "•  Tempo real (opcional): o que você copiar num computador aparece no outro em poucos segundos, pronto para colar. Imagens só se você ligar essa opção.\n\n" +
             "PESQUISAR\n" +
             "•  Nas telas Clips e Atalhos por Expansão: clique em \"Pesquisar…\" (ou Ctrl+F) e digite; a lista vai afunilando. Vale o texto e, nas expansões, também o atalho. Esc limpa.\n" +
-            "•  No Ctrl+0: é só começar a digitar com a lista aberta. Backspace apaga, Esc limpa a busca (e, de novo, fecha).\n\n" +
+            "•  No Ctrl+0: é só começar a digitar com a lista aberta. Backspace apaga, Esc limpa a busca (e, de novo, fecha).\n" +
+            "•  Barra de rolagem do Ctrl+0: com o ponteiro perto dela, ela alarga; arraste a barrinha ou clique no trilho para pular (bom para touchpad).\n\n" +
             "POSIÇÕES E FIXADOS\n" +
             "•  Ao fixar um clip, ele sobe e fica logo abaixo do último fixado.\n" +
             "•  Ao excluir um fixado que tem itens abaixo, você escolhe: \"Puxar para cima\" (os de baixo mudam de número) ou \"Manter posições\" (a posição fica como vaga livre, para você não precisar decorar tudo de novo). Para preencher a vaga, selecione-a e digite o texto.\n" +
             "•  Converter em expansão: botão direito num clip (na lista ou no Ctrl+0) › \"Converter em expansão\". Digite o atalho e salve; depois você escolhe se o clip continua na lista.\n\n" +
             "DATA E HORA\n" +
-            "•  Atalhos prontos: hj1 (data), hr1 (hora), dh1 (data e hora) e ext1 (data por extenso). Em qualquer atalho seu dá para usar {data}, {hora}, {datahora} e {extenso}: na hora de colar, viram a data e a hora do momento.\n" +
-            "•  Ctrl+Shift+D cola a data de hoje. Formato da data e do ano: Configurações › Geral. Hora em 24h ou AM/PM: botão ao lado de \"Reorganizar\" na tela Atalhos por Expansão.\n\n" +
+            "•  Atalhos prontos: d1 (data de hoje), d0 (ontem), d2 (amanhã), hr1 (hora), dh1 (data e hora) e ext1 (data por extenso). Em qualquer atalho seu dá para usar {data}, {ontem}, {amanha}, {hora}, {datahora} e {extenso}: na hora de colar, viram a data e a hora do momento.\n" +
+            "•  " + HotkeyLabel(dateMods, dateVk) + " cola a data de hoje (troque a tecla em Configurações › Geral). Formato da data e do ano: Configurações › Geral. Hora em 24h ou AM/PM: botão ao lado de \"Reorganizar\" na tela Atalhos por Expansão.\n\n" +
             "SUGESTÕES E RECLAMAÇÕES\n" +
             "•  Botão \"Enviar sugestão / reclamação\" no alto desta página: a mensagem vai direto para o desenvolvedor (precisa de internet). O e-mail é opcional.\n\n" +
             "ÍCONE PERTO DO RELÓGIO\n" +
@@ -3054,7 +3773,11 @@ atalhos_data=sim
         dlgResult = 0;
         int estLines = 0;
         foreach (string ml in message.Split('\n')) estLines += Math.Max(1, (ml.Length + 61) / 62);
-        if (dlgRedNote.Length > 0) estLines += 1 + (dlgRedNote.Length + 61) / 62;
+        if (dlgRedNote.Length > 0)
+        {
+            estLines += 1;
+            foreach (string rl in dlgRedNote.Split('\n')) estLines += Math.Max(1, (rl.Length + 53) / 54); // negrito: menos letras por linha
+        }
         dlgExtra = Math.Max(0, estLines - 4) * 20;
         const uint style = 0x80000000 | 0x02000000; // sem barra de título: o programa desenha tudo
         int w = Px(480), h = Px(196 + dlgExtra);
@@ -4717,6 +5440,7 @@ atalhos_data=sim
         cloudBusy = true;
         cloudBusyText = busy;
         RepaintAll();
+        BusyShow(busy);
         bool mgrOn = hwndMgr != IntPtr.Zero && IsWindowEnabled(hwndMgr);
         if (mgrOn) EnableWindow(hwndMgr, false);
         string[] result = new string[1];
@@ -4740,6 +5464,8 @@ atalhos_data=sim
         if (mgrOn) EnableWindow(hwndMgr, true);
         cloudBusy = false;
         cloudBusyText = "";
+        if (result[0] == null && (busy.StartsWith("Enviando") || busy.StartsWith("Baixando"))) BusyDone(busy.StartsWith("Enviando") ? "Enviado para a nuvem" : "Baixado da nuvem");
+        else BusyHide();
         RepaintAll();
         return result[0];
     }
@@ -4873,10 +5599,15 @@ atalhos_data=sim
     {
         KillTimer(hwndMain, (IntPtr)TIMER_CLOUDASK);
         if (!cloudDirty || !CloudReady() || cloudMode == 2) return;
-        bool mgrVisible = hwndMgr != IntPtr.Zero && IsWindowVisible(hwndMgr);
-        if (cloudMode == 0 && (!mgrVisible || hDlg != IntPtr.Zero || hMenuWnd != IntPtr.Zero || cloudBusy || editDirty || expDirty))
+        if (cloudMode == 0 && (hDlg != IntPtr.Zero || hMenuWnd != IntPtr.Zero || cloudBusy || editDirty || expDirty))
         {
-            SetTimer(hwndMain, (IntPtr)TIMER_CLOUDASK, 5000, IntPtr.Zero); // pergunta quando a janela estiver aberta e livre
+            SetTimer(hwndMain, (IntPtr)TIMER_CLOUDASK, 5000, IntPtr.Zero); // pergunta quando a janela estiver livre
+            return;
+        }
+        if (cloudMode == 0 && !MgrInFront()) // não pula na frente: pisca o ícone e pergunta quando a pessoa voltar
+        {
+            FlashMgr();
+            SetTimer(hwndMain, (IntPtr)TIMER_CLOUDASK, 1500, IntPtr.Zero);
             return;
         }
         if (cloudBusy || hDlg != IntPtr.Zero) { SetTimer(hwndMain, (IntPtr)TIMER_CLOUDASK, 5000, IntPtr.Zero); return; }
@@ -4905,6 +5636,8 @@ atalhos_data=sim
         });
     }
 
+    static bool cloudAskPending;
+
     static void OnCloudCheckResult()
     {
         CloudInfo i = cloudCheckResult;
@@ -4912,13 +5645,19 @@ atalhos_data=sim
         if (i == null) return;
         cloudInfo = i;
         RepaintAll();
-        if (i.Stamp == cloudLastSync || i.Machine == Environment.MachineName || hDlg != IntPtr.Zero || cloudBusy) return;
-        dlgEscResult = 2;
-        dlgPrimary = 1;
-        if (AskDialog("Versão mais nova na nuvem", "Há na nuvem uma versão mais nova dos seus clips e atalhos, " + InfoText(i) +
-            ".\nBaixar agora? (os dados deste computador serão substituídos; uma cópia fica guardada)", "Baixar", "Agora não", null) == 1)
-            CloudDownload(true);
-        else { cloudLastSync = i.Stamp; SaveLocal(); } // não pergunta de novo por esta mesma versão
+        if (i.Stamp == cloudLastSync || i.Machine == Environment.MachineName || cloudAskPending) return;
+        cloudAskPending = true;
+        AskLater(delegate // pergunta quando a pessoa estiver na janela do ClipAtalho (o ícone pisca até lá)
+        {
+            cloudAskPending = false;
+            if (i.Stamp == cloudLastSync) return;
+            dlgEscResult = 2;
+            dlgPrimary = 1;
+            if (AskDialog("Versão mais nova na nuvem", "Há na nuvem uma versão mais nova dos seus clips e atalhos, " + InfoText(i) +
+                ".\nBaixar agora? (os dados deste computador serão substituídos; uma cópia fica guardada)", "Baixar", "Agora não", null) == 1)
+                CloudDownload(true);
+            else { cloudLastSync = i.Stamp; SaveLocal(); } // não pergunta de novo por esta mesma versão
+        });
     }
 
     // ---- tempo real: cada Ctrl+C vai para a nuvem; o outro computador confere a cada 5 segundos
@@ -5439,10 +6178,12 @@ atalhos_data=sim
     }
 
     // Regrava a seção [atalhos] do .ini (na ordem dada) e recarrega.
-    // Versões anteriores: acrescenta hj1, hr1, dh1 e ext1 uma única vez (sem mexer nos atalhos que já existem).
+    // Versões anteriores: acrescenta os atalhos de data uma única vez (sem mexer nos que já existem).
+    // 1.5.0: d1 (hoje), d0 (ontem) e d2 (amanhã); quem já tem hj1 continua com ele.
     static void EnsureDateAbbr()
     {
-        if (cfgDateAbbrDone) return;
+        if (cfgDateAbbrDone && cfgDateAbbr2Done) return;
+        bool onlyNew = cfgDateAbbrDone;
         List<string> order = new List<string>(cfgAbbrOrder);
         Dictionary<string, string> d = new Dictionary<string, string>(cfgAbbr);
         List<string> loose = new List<string>(cfgAbbrLoose);
@@ -5450,6 +6191,7 @@ atalhos_data=sim
         foreach (string[] a in DefaultAbbr)
         {
             if (a[1].IndexOf('{') < 0 || d.ContainsKey(a[0])) continue;
+            if (onlyNew && a[0] != "d0" && a[0] != "d1" && a[0] != "d2") continue;
             order.Add(a[0]);
             d[a[0]] = a[1];
             cfgAbbrDate[a[0]] = DateTime.Now;
@@ -5460,10 +6202,10 @@ atalhos_data=sim
             xUndoing = true;
             try { WriteAbbr(order, d, loose); }
             finally { xUndoing = false; }
-            Log("Atalhos de data e hora acrescentados (hj1, hr1, dh1, ext1)");
+            Log("Atalhos de data e hora acrescentados (d0, d1, d2" + (onlyNew ? "" : ", hr1, dh1, ext1") + ")");
         }
         cfgUndoing = true;
-        try { SetIniValue("geral", "atalhos_data", "sim"); }
+        try { SetIniValue("geral", "atalhos_data", "sim"); SetIniValue("geral", "atalhos_data2", "sim"); }
         finally { cfgUndoing = false; }
         LoadConfig();
     }
@@ -5968,7 +6710,9 @@ atalhos_data=sim
             case IDC_SEG: return "Geral";
             case IDC_SEG + 1: return "Dados e backup";
             case IDC_SEG3: return "Nuvem";
-            case IDC_T_DATEKEY: return "Ctrl+Shift+D cola a data de hoje  ·  formato da data (também dos atalhos hj1 e dh1):";
+            case IDC_T_DATEKEY: return "Tecla de atalho que cola a data de hoje:";
+            case IDC_DATEHOT: return HotkeyLabel(dateMods, dateVk) + (cfgDateKey && !registeredOK[30] ? "  (em uso por outro programa!)" : "") + "   ·   trocar…";
+            case IDC_MOUSEBTN: return "Botões do mouse: " + (mouseAct.Count == 0 ? "desligados" : mouseAct.Count == 1 ? "1 ação" : mouseAct.Count + " ações") + "   ▼";
             case IDC_DATEFMT: return DateStr(DateTime.Now) + "   ▼";
             case IDC_YEARFMT: return (cfgYear2 ? "Ano com 2 dígitos" : "Ano com 4 dígitos") + "   ▼";
             case IDC_HOURFMT: return (cfgAmPm ? "AM/PM" : "24h") + "  ▼";
@@ -6098,6 +6842,7 @@ atalhos_data=sim
         else if (id >= IDC_MOD && id < IDC_MOD + 4) primary = (cfgMods & ModBits[id - IDC_MOD]) != 0;
         else if (id == IDC_THEME || id == IDC_THEME + 1) primary = (id == IDC_THEME + 1) == cfgDark;
         else if (id == IDC_DEL || id == IDC_XDEL || (id == IDC_DLG + 1 && dlgWarn)) color = C_RED;
+        else if (id == IDC_DATEHOT && cfgDateKey && !registeredOK[30]) { color = C_RED; border = 0xFFDC2626; }
         if (id == IDC_DELPIN || id == IDC_FACTORY) // botão vermelho
         {
             fill = down ? 0xFFB91C1C : 0xFFDC2626;
@@ -6242,6 +6987,7 @@ atalhos_data=sim
             DrawTextAt(hdc, "Cor da janela:", hUiFont, C_GRAY, Px(220), Px(198), Px(318), Px(228), 0x24);
             DrawTextAt(hdc, "Geral", hUiBold, C_TEXT, Px(36), Px(234), Px(780), Px(254), 0x24);
             DrawTextAt(hdc, "Data:", hUiBold, C_TEXT, Px(36), Px(422), Px(92), Px(452), 0x24);
+            DrawTextAt(hdc, "formato também dos atalhos d0, d1, d2 e dh1", hSmallFont, C_GRAY, Px(540), Px(422), Px(780), Px(452), 0x8024);
             DrawTextAt(hdc, "Tudo fica no ClipAtalho.ini (e as imagens na pasta \"ClipAtalho imagens\"). Backup e padrão de fábrica: \"Dados e backup\"; outro computador: \"Nuvem\".",
                 hSmallFont, C_GRAY, Px(36), Px(496), Px(780), Px(518), 0x8024);
         }
@@ -6309,6 +7055,7 @@ atalhos_data=sim
         HidePopup();
         ShowWindow(hwndMgr, 9); // restaura/mostra
         SetForegroundWindow(hwndMgr);
+        if (laterAsks.Count > 0) PostMessageW(hwndMain, WM_RUNASKS, IntPtr.Zero, IntPtr.Zero);
         if (!wasOpen)
         {
             editClip = null;
@@ -6324,6 +7071,7 @@ atalhos_data=sim
     {
         if (!ResolveDirty(true)) return;
         clips.RemoveAll(delegate(Clip c) { return !c.IsImage && c.Text.Length == 0; });
+        asksFlashed = false; // perguntas pendentes: voltam a piscar na próxima vez
         ShowWindow(hwndMgr, 0);
         mgrSel = null;
         editClip = null;
@@ -6777,6 +7525,8 @@ atalhos_data=sim
                 RepaintAll();
                 return;
             case IDC_DATEFMT: DateFmtMenu(); return;
+            case IDC_DATEHOT: ChangeDateHotkey(); return;
+            case IDC_MOUSEBTN: MouseMenu(); return;
             case IDC_YEARFMT: YearFmtMenu(); return;
             case IDC_HOURFMT: HourFmtMenu(); return;
             case IDC_CLOUDPROV: CloudProvMenu(); return;
@@ -6841,6 +7591,19 @@ atalhos_data=sim
                     uint nm = cfgMods ^ ModBits[id - IDC_MOD];
                     if (nm == 0) { Info("Escolha pelo menos uma tecla para o atalho."); return; }
                     if (nm == 4) { Info("Shift sozinho impediria digitar ! @ # $ %. Combine com Ctrl ou Alt."); return; }
+                    List<string> pw = PositionWarnings(nm);
+                    if (pw.Count > 0)
+                    {
+                        dlgRedNote = string.Join("\n", pw.ToArray());
+                        dlgWarn = true;
+                        dlgEscResult = 2;
+                        dlgPrimary = 2;
+                        int pa = AskDialog("Trocar o atalho de colagem?", "Novo atalho: " + ModsLabel(nm) + "+1…9 (e " + ModsLabel(nm) +
+                            "+0 para a lista).\nVeja abaixo o que ele afeta:", "Usar " + ModsLabel(nm), "Manter " + cfgModsLabel, null);
+                        dlgRedNote = "";
+                        dlgWarn = false;
+                        if (pa != 1) return;
+                    }
                     SetIniValue("geral", "modificadores", ModsLabel(nm));
                     LoadConfig();
                     RepaintAll();
@@ -6865,6 +7628,13 @@ atalhos_data=sim
                 case WM_CLOSE:
                     CloseManager();
                     return IntPtr.Zero;
+                case 0x0006: // WM_ACTIVATE: voltou para a janela: mostra as perguntas que esperavam
+                    if ((wParam.ToInt64() & 0xFFFF) != 0) asksFlashed = false;
+                    if ((wParam.ToInt64() & 0xFFFF) != 0 && laterAsks.Count > 0) PostMessageW(hwndMain, WM_RUNASKS, IntPtr.Zero, IntPtr.Zero);
+                    break;
+                case 0x0020: // WM_SETCURSOR: ampulheta enquanto trabalha
+                    if (cloudBusy) { SetCursor(LoadCursorW(IntPtr.Zero, (IntPtr)32514)); return (IntPtr)1; }
+                    break;
                 case 0x0047: // WM_WINDOWPOSCHANGED: a sombra acompanha a janela
                     if (IsWindowVisible(hwnd) && !IsIconic(hwnd)) PlaceShade(hwnd);
                     else HideShade(hwnd);
@@ -6952,7 +7722,7 @@ atalhos_data=sim
         popTrashArmed = null;
         popDrag = false;
         if (popScale.Length != popLines.Count) popScale = new float[popLines.Count];
-        if (hMouseHook == IntPtr.Zero) // o mouse só é observado enquanto a lista está aberta
+        if (hMouseHook == IntPtr.Zero) // normalmente já está ligado desde o início
             hMouseHook = SetWindowsHookExW(14, Marshal.GetFunctionPointerForDelegate(mouseProcRef), hInst, 0);
         int w = Px(540), h = PopupHeight();
         int x, y;
@@ -7050,7 +7820,8 @@ atalhos_data=sim
         FadeWindow(hwndPopup, false);
         KillTimer(hwndMain, (IntPtr)TIMER_POPUP);
         KillTimer(hwndMain, (IntPtr)TIMER_WAVE);
-        if (hMouseHook != IntPtr.Zero) { UnhookWindowsHookEx(hMouseHook); hMouseHook = IntPtr.Zero; }
+        if (popBarDrag) { popBarDrag = false; ReleaseCapture(); }
+        popBarHover = 0;
     }
 
     static void PaintPopup(IntPtr hwnd)
@@ -7129,13 +7900,13 @@ atalhos_data=sim
             int ly = PopRowTop(popDropLine) - Px(1);
             RoundRect(mem, Px(12), ly, w - Px(24), Px(3), Px(2), A_ACCENT, 0);
         }
-        int total = popLines.Count - 1, vis = PopVisible();
-        if (popNumbered && total > vis) // barrinha de rolagem
+        int btt, btr, bth, bty;
+        if (PopBarGeom(out btt, out btr, out bth, out bty)) // barra de rolagem: fina; com o ponteiro perto, alarga e dá para arrastar
         {
-            int trackTop = Px(8 + POP_ROW), track = vis * Px(POP_ROW);
-            int th = Math.Max(Px(24), track * vis / total);
-            int ty = trackTop + (track - th) * popScroll / Math.Max(1, total - vis);
-            RoundRect(mem, w - Px(8), ty, Px(4), th, Px(2), A_BTNBORDER, 0);
+            bool wide = popBarHover > 0 || popBarDrag;
+            int bw = wide ? Px(10) : Px(4), bx = w - (wide ? Px(15) : Px(8));
+            if (wide) RoundRect(mem, bx, btt, bw, btr, Px(5), A_BG, 0);
+            RoundRect(mem, bx, bty, bw, bth, wide ? Px(5) : Px(2), (popBarHover == 2 || popBarDrag) ? A_ACCENT : A_BTNBORDER, 0);
         }
         // cabeçalho: "Limpar" e X
         int hy = Px(10), hs = Px(26);
@@ -7165,6 +7936,17 @@ atalhos_data=sim
     {
         bool ctrlAltWin = KeyDown(VK_CONTROL) || KeyDown(VK_MENU) || KeyDown(VK_LWIN) || KeyDown(VK_RWIN);
         bool shift = KeyDown(VK_SHIFT);
+
+        if (hotCapture) // tela "Trocar o atalho": a próxima combinação vira o atalho (e não chega aos programas)
+        {
+            if (IsModifierVk(vk)) return false;
+            uint cm = (KeyDown(VK_MENU) ? 1u : 0u) | (KeyDown(VK_CONTROL) ? 2u : 0u) | (shift ? 4u : 0u) | ((KeyDown(VK_LWIN) || KeyDown(VK_RWIN)) ? 8u : 0u);
+            if (vk == VK_ESCAPE && cm == 0) { PostMessageW(hwndMain, WM_HOTCAP, (IntPtr)(-1), IntPtr.Zero); return true; }
+            capMods = cm;
+            capVk = (uint)vk;
+            PostMessageW(hwndMain, WM_HOTCAP, IntPtr.Zero, IntPtr.Zero);
+            return true;
+        }
 
         if (popMode == MODE_HISTORY)
         {
@@ -7342,7 +8124,7 @@ atalhos_data=sim
                 case WM_HOTKEY:
                     if (paused) return IntPtr.Zero;
                     int id = wParam.ToInt32();
-                    if (id == 30) { HidePopup(); StartPaste(DateStr(DateTime.Now), 0); return IntPtr.Zero; } // Ctrl+Shift+D
+                    if (id == 30) { HidePopup(); StartPaste(DateStr(DateTime.Now), 0); return IntPtr.Zero; } // tecla da data (Ctrl+Alt+D)
                     bool plainKey = id > 20; // com Shift: sem formatação
                     if (id > 20) id -= 20;
                     else if (id > 10) id -= 10; // teclado numérico
@@ -7380,6 +8162,8 @@ atalhos_data=sim
                             AutoDailyBackup();
                             break;
                         case TIMER_LIVE: OnLiveTimer(); break;
+                        case TIMER_BUSY: OnBusyTimer(); break;
+                        case TIMER_ASKS: RunAsks(); break;
                     }
                     return IntPtr.Zero;
                 case WM_SHOWPOPUP:
@@ -7433,6 +8217,19 @@ atalhos_data=sim
                 case WM_POPSCROLL:
                     if (popMode == MODE_HISTORY) PopupScroll(wParam.ToInt32());
                     return IntPtr.Zero;
+                case WM_HOTCAP:
+                    if (hDlg != IntPtr.Zero && hotCapture) dlgResult = wParam.ToInt32() == -1 ? 2 : 100;
+                    return IntPtr.Zero;
+                case WM_MOUSEACT:
+                {
+                    string ma = mouseActPending;
+                    mouseActPending = null;
+                    RunMouseAction(ma);
+                    return IntPtr.Zero;
+                }
+                case WM_RUNASKS:
+                    RunAsks();
+                    return IntPtr.Zero;
             }
             if (msgTaskbar != 0 && m == msgTaskbar) // Explorer reiniciou: recria o ícone
             {
@@ -7460,6 +8257,19 @@ atalhos_data=sim
                     return (IntPtr)3; // MA_NOACTIVATE
                 case 0x0201: // WM_LBUTTONDOWN na faixa de cima: começa a arrastar a lista
                 {
+                    int bh = PopBarHit(lParam);
+                    if (bh > 0) // barra de rolagem: arrasta a barrinha ou pula para onde clicou no trilho
+                    {
+                        int by = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
+                        if (bh == 1) PopBarTo(by, false);
+                        popBarDrag = true;
+                        popBarY0 = by;
+                        popBarS0 = popScroll;
+                        SetCapture(hwnd);
+                        InvalidatePopBar();
+                        SetTimer(hwndMain, (IntPtr)TIMER_POPUP, 20000, IntPtr.Zero);
+                        return IntPtr.Zero;
+                    }
                     if (OnPopupClose(lParam)) return IntPtr.Zero;
                     int y = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
                     if (popMode == MODE_HISTORY && y < Px(8 + POP_ROW))
@@ -7484,13 +8294,32 @@ atalhos_data=sim
                 }
                 case 0x0205: // WM_RBUTTONUP: menu do item
                 {
-                    if (popMode != MODE_HISTORY || !popNumbered) return IntPtr.Zero;
+                    if (popMode != MODE_HISTORY || !popNumbered || PopBarHit(lParam) > 0) return IntPtr.Zero;
                     int pl = PopupLineAt(lParam);
                     if (pl >= 1 && pl - 1 < popClips.Count) PopupMenu(popClips[pl - 1]);
                     return IntPtr.Zero;
                 }
+                case 0x02A3: // WM_MOUSELEAVE: a barra de rolagem volta a ficar fina
+                    if (popBarHover != 0 && !popBarDrag) { popBarHover = 0; InvalidatePopBar(); }
+                    return IntPtr.Zero;
                 case 0x0200: // WM_MOUSEMOVE
                 {
+                    if (popBarDrag) { PopBarTo((short)((lParam.ToInt64() >> 16) & 0xFFFF), true); return IntPtr.Zero; }
+                    if (popPress < 1 && !popDrag)
+                    {
+                        int nb = PopBarHit(lParam);
+                        if (nb != popBarHover)
+                        {
+                            popBarHover = nb;
+                            InvalidatePopBar();
+                            TRACKMOUSEEVENT tme = new TRACKMOUSEEVENT();
+                            tme.cbSize = Marshal.SizeOf(typeof(TRACKMOUSEEVENT));
+                            tme.dwFlags = 2; // TME_LEAVE
+                            tme.hwndTrack = hwnd;
+                            TrackMouseEvent(ref tme);
+                        }
+                        if (nb > 0) return IntPtr.Zero;
+                    }
                     if (popDrag)
                     {
                         POINT pt;
@@ -7532,12 +8361,23 @@ atalhos_data=sim
                     return IntPtr.Zero;
                 }
                 case 0x0215: // WM_CAPTURECHANGED
+                    if (popBarDrag) { popBarDrag = false; InvalidatePopBar(); }
                     popDrag = false;
                     if (popItemDrag) { popItemDrag = false; popDropLine = -1; InvalidateRect(hwnd, IntPtr.Zero, false); }
                     popPress = -1;
                     break;
                 case WM_LBUTTONUP: // clique: cola o item (a janela não tira o foco do programa em uso)
                 {
+                    if (popBarDrag)
+                    {
+                        popBarDrag = false;
+                        ReleaseCapture();
+                        popBarHover = PopBarHit(lParam);
+                        InvalidatePopBar();
+                        SetTimer(hwndMain, (IntPtr)TIMER_POPUP, 20000, IntPtr.Zero);
+                        return IntPtr.Zero;
+                    }
+                    if (PopBarHit(lParam) > 0) return IntPtr.Zero;
                     if (popDrag) // fim do arraste da janela (vale só enquanto ela está aberta)
                     {
                         popDrag = false;
@@ -7864,6 +8704,8 @@ atalhos_data=sim
         RegisterClass("ClipAtalhoShadow", shadeProcRef, IntPtr.Zero);
         menuProcRef = MenuProc;
         RegisterClass("ClipAtalhoMenu", menuProcRef, IntPtr.Zero);
+        busyProcRef = BusyProc;
+        RegisterClass("ClipAtalhoBusy", busyProcRef, IntPtr.Zero);
         hwndMain = CreateWindowExW(0, "ClipAtalhoMain", "ClipAtalho", 0, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, hInst, IntPtr.Zero);
         hwndPopup = CreateWindowExW(0x8 | 0x80 | 0x08000000 | 0x80000, "ClipAtalhoPopup", "", 0x80000000, 0, 0, 10, 10, IntPtr.Zero, IntPtr.Zero, hInst, IntPtr.Zero);
         if (hwndMain == IntPtr.Zero || hwndPopup == IntPtr.Zero)
@@ -7885,6 +8727,7 @@ atalhos_data=sim
         LoadClips();
         EnsureAbbrDates();
         EnsureDateAbbr();
+        DateKeyMigration();
         if (dataMissing) Balloon("ClipAtalho", "A pasta de dados não está acessível agora. Usando os dados da pasta do programa.");
         try { ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072; } catch { } // TLS 1.2
         CloudCheckAsync(); // a nuvem tem uma versão mais nova (de outro computador)?
@@ -7897,7 +8740,8 @@ atalhos_data=sim
         SetTimer(hwndMain, (IntPtr)TIMER_CONFIG, 2000, IntPtr.Zero);
 
         hHook = SetWindowsHookExW(13, Marshal.GetFunctionPointerForDelegate(hookProcRef), hInst, 0);
-        mouseProcRef = MouseProc; // o gancho do mouse só é ligado enquanto a lista rápida está aberta
+        mouseProcRef = MouseProc; // gancho do mouse: cliques zeram a digitação da expansão e os botões extras podem ter ações
+        hMouseHook = SetWindowsHookExW(14, Marshal.GetFunctionPointerForDelegate(mouseProcRef), hInst, 0);
         Log("Gancho de teclado: " + (hHook == IntPtr.Zero ? "FALHOU (erro " + Marshal.GetLastWin32Error() + ")" : "ativo"));
         if (hHook == IntPtr.Zero)
             Balloon("ClipAtalho", "Não foi possível ativar a expansão de texto; os atalhos de colagem continuam funcionando.");

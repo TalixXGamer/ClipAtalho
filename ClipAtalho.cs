@@ -1,5 +1,5 @@
 ﻿// ClipAtalho - gerenciador de área de transferência portátil + expansão de texto.
-// Versão 1.5.0 20-11-2026. Compilar: dê dois cliques no "Compilar ClipAtalho.bat" (usa o csc.exe que já vem no Windows).
+// Versão 1.5.1 24-11-2026. Compilar: dê dois cliques no "Compilar ClipAtalho.bat" (usa o csc.exe que já vem no Windows).
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -342,6 +342,17 @@ static class ClipAtalho
     [StructLayout(LayoutKind.Sequential)]
     struct TRACKMOUSEEVENT { public int cbSize; public uint dwFlags; public IntPtr hwndTrack; public uint dwHoverTime; }
     [DllImport("user32.dll")] static extern bool FlashWindowEx(ref FLASHWINFO fi);
+    [StructLayout(LayoutKind.Sequential)]
+    struct LASTINPUTINFO { public uint cbSize, dwTime; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct TOOLINFO { public int cbSize; public uint uFlags; public IntPtr hwnd, uId; public RECT rect; public IntPtr hinst; public string lpszText; public IntPtr lParam; }
+    [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO li);
+    [DllImport("user32.dll")] static extern bool PostThreadMessageW(uint tid, uint msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern uint EnumClipboardFormats(uint fmt);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClipboardFormatNameW(uint fmt, StringBuilder sb, int max);
+    [DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode)] static extern IntPtr SendMessageTip(IntPtr h, uint m, IntPtr w, ref TOOLINFO ti);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("comctl32.dll")] static extern void InitCommonControls();
     [DllImport("user32.dll")] static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT tme);
     [DllImport("user32.dll")] static extern IntPtr SetCursor(IntPtr cursor);
     [DllImport("user32.dll")] static extern bool UpdateWindow(IntPtr hwnd);
@@ -350,9 +361,9 @@ static class ClipAtalho
     const uint WM_DESTROY = 0x0002, WM_PAINT = 0x000F, WM_MOUSEACTIVATE = 0x0021, WM_KEYDOWN = 0x0100,
         WM_SYSKEYDOWN = 0x0104, WM_TIMER = 0x0113, WM_LBUTTONUP = 0x0202, WM_RBUTTONUP = 0x0205,
         WM_HOTKEY = 0x0312, WM_COMMAND = 0x0111, WM_CLOSE = 0x0010, WM_CLIPBOARDUPDATE = 0x031D,
-        WM_TRAY = 0x8001, WM_SHOWPOPUP = 0x8002, WM_HIDEPOPUP = 0x8003, WM_FEEDBACKDONE = 0x8010, WM_POPSCROLL = 0x8011, WM_CLOUDDONE = 0x8012, WM_CLOUDCHECK = 0x8013, WM_CLOUDAUTH = 0x8014, WM_POPFILTER = 0x8015, WM_CLOUDLIVE = 0x8016, WM_HOTCAP = 0x8017, WM_MOUSEACT = 0x8018, WM_RUNASKS = 0x8019;
+        WM_TRAY = 0x8001, WM_SHOWPOPUP = 0x8002, WM_HIDEPOPUP = 0x8003, WM_FEEDBACKDONE = 0x8010, WM_POPSCROLL = 0x8011, WM_CLOUDDONE = 0x8012, WM_CLOUDCHECK = 0x8013, WM_CLOUDAUTH = 0x8014, WM_POPFILTER = 0x8015, WM_CLOUDLIVE = 0x8016, WM_HOTCAP = 0x8017, WM_MOUSEACT = 0x8018, WM_RUNASKS = 0x8019, WM_HOOKPASTE = 0x801A, WM_HOOKEXPAND = 0x801B, WM_CLOUDBGDONE = 0x801C;
     const int TIMER_WAITMODS = 1, TIMER_RESTORE = 2, TIMER_POPUP = 3, TIMER_CONFIG = 4, TIMER_FADE = 5,
-        TIMER_WAVE = 6, TIMER_CLIPREAD = 7, TIMER_ARM = 8, TIMER_CLOUDASK = 9, TIMER_LIVE = 10, TIMER_BUSY = 11, TIMER_ASKS = 12;
+        TIMER_WAVE = 6, TIMER_CLIPREAD = 7, TIMER_ARM = 8, TIMER_CLOUDASK = 9, TIMER_LIVE = 10, TIMER_BUSY = 11, TIMER_ASKS = 12, TIMER_TRAY = 13, TIMER_TOPMOST = 14;
     const uint CF_UNICODETEXT = 13;
     const int VK_BACK = 0x08, VK_TAB = 0x09, VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12,
         VK_ESCAPE = 0x1B, VK_LWIN = 0x5B, VK_RWIN = 0x5C;
@@ -410,7 +421,7 @@ static class ClipAtalho
     static string cfgModsLabel = "Ctrl";
     static bool cfgExpand = true, cfgSaveAll = true, iniCreated, cfgImages = true, cfgListPos;
     static int cfgDateFmt; // 0 = 16/11/2026, 1 = 16-11-2026, 2 = 16112026
-    static bool cfgYear2, cfgAmPm, cfgDateKey = true, cfgDateAbbrDone, cfgDateAbbr2Done;
+    static bool cfgYear2, cfgAmPm, cfgDateKey = true, cfgDateAbbrDone, cfgDateAbbr2Done, cfgTextOnly = true;
     // Tecla que cola a data de hoje (padrão Ctrl+Alt+D; até a 1.4.0 era Ctrl+Shift+D, que conflita com o CronoShot)
     const uint DATE_DEF_MODS = 2 | 1, DATE_DEF_VK = 0x44;
     static uint dateMods = DATE_DEF_MODS, dateVk = DATE_DEF_VK;
@@ -514,6 +525,7 @@ static class ClipAtalho
     // os botões do meio/laterais podem ter ações e um clique fora da lista rápida (ou da sugestão) a fecha.
     static IntPtr MouseProc(int nCode, IntPtr wParam, IntPtr lParam)
     {
+        lastHookTick = Environment.TickCount;
         try
         {
             uint mm = (uint)wParam.ToInt64();
@@ -577,10 +589,14 @@ static class ClipAtalho
     static bool[] registeredOK = new bool[31]; // 1..10 = teclado principal, 11..20 = teclado numérico, 21..29 = +Shift (sem formatação)
 
     // Registro de diagnóstico (ClipAtalho.log). Nunca grava o conteúdo dos clips, só tamanhos.
+    static readonly object logLock = new object();
     static void Log(string s)
     {
-        try { File.AppendAllText(logPath, DateTime.Now.ToString("dd/MM HH:mm:ss.fff") + "  " + s + "\r\n"); }
-        catch { }
+        lock (logLock)
+        {
+            try { File.AppendAllText(logPath, DateTime.Now.ToString("dd/MM HH:mm:ss.fff") + "  " + s + "\r\n"); }
+            catch { }
+        }
     }
 
     static int Px(int v) { return (int)(v * scale + 0.5); }
@@ -624,6 +640,8 @@ hora_formato=24h
 ; Tecla de atalho que cola a data de hoje: sim ou nao, e qual combinação (troque em Configurações › Geral)
 tecla_data=sim
 tecla_data_atalho=Ctrl+Alt+D
+; Cópia que traz texto e figura juntos: tirar a figura e deixar só o texto (sim ou nao)
+so_texto=sim
 atalhos_data=sim
 atalhos_data2=sim
 ; Botões do mouse (meio, voltar, avancar; sozinhos ou com _ctrl, _shift, _alt), ex.: mouse_meio_ctrl=lista
@@ -830,6 +848,7 @@ atalhos_data2=sim
         cfgDateKey = true;
         cfgDateAbbrDone = false;
         cfgDateAbbr2Done = false;
+        cfgTextOnly = true;
         dateHotSet = false;
         dateKeyInIni = false;
         dateMods = DATE_DEF_MODS;
@@ -873,6 +892,7 @@ atalhos_data2=sim
                 }
                 else if (key == "atalhos_data") cfgDateAbbrDone = val.Trim().ToLowerInvariant() == "sim";
                 else if (key == "atalhos_data2") cfgDateAbbr2Done = val.Trim().ToLowerInvariant() == "sim";
+                else if (key == "so_texto") cfgTextOnly = val.Trim().ToLowerInvariant() != "nao";
                 else if (key.StartsWith("mouse_"))
                 {
                     string mv = val.Trim().ToLowerInvariant();
@@ -994,6 +1014,7 @@ atalhos_data2=sim
         backupDir = "";
         cloudLive = false;
         cloudLiveImg = false;
+        adminMode = false;
         string t = ReadTextFile(LocalIniPath);
         if (t == null) return;
         foreach (string raw in t.Split('\n'))
@@ -1015,6 +1036,7 @@ atalhos_data2=sim
             else if (k == "pasta_backups") backupDir = v;
             else if (k == "nuvem_tempo_real") cloudLive = v.ToLowerInvariant() == "sim";
             else if (k == "nuvem_tempo_real_imagens") cloudLiveImg = v.ToLowerInvariant() == "sim";
+            else if (k == "administrador") adminMode = v.ToLowerInvariant() == "sim";
         }
         if (dataDir.Length == 0) dataOn = false;
     }
@@ -1034,7 +1056,7 @@ atalhos_data2=sim
                     "\r\n; acesso ao OneDrive deste computador (criptografado pelo Windows; só funciona neste usuário)\r\nnuvem_token=" + tok +
                     "\r\nnuvem_modo=" + CloudModeKeys[cloudMode] + "\r\nnuvem_aviso=" + (cloudCheck ? "sim" : "nao") + "\r\nnuvem_sinc=" + cloudLastSync +
                     "\r\nnuvem_tempo_real=" + (cloudLive ? "sim" : "nao") + "\r\nnuvem_tempo_real_imagens=" + (cloudLiveImg ? "sim" : "nao") +
-                    "\r\npasta_backups=" + backupDir +
+                    "\r\npasta_backups=" + backupDir + "\r\nadministrador=" + (adminMode ? "sim" : "nao") +
                     (cloudClientOverride.Length > 0 ? "\r\nonedrive_client_id=" + cloudClientOverride : "") + "\r\n", new UTF8Encoding(true));
             }
             catch (Exception e) { Log("FALHA ao gravar ClipAtalho.local.ini: " + e.Message); }
@@ -1666,6 +1688,17 @@ atalhos_data2=sim
         asksFlashed = true;
     }
 
+    // Terminou algo com a janela aberta mas em segundo plano: pisca o ícone da barra de tarefas (não puxa a pessoa de volta).
+    static void FlashIfAway()
+    {
+        if (hwndMgr == IntPtr.Zero || !IsWindowVisible(hwndMgr) || MgrInFront()) return;
+        FLASHWINFO f = new FLASHWINFO();
+        f.cbSize = Marshal.SizeOf(typeof(FLASHWINFO));
+        f.hwnd = hwndMgr;
+        f.dwFlags = 2 | 12;
+        FlashWindowEx(ref f);
+    }
+
     static void RunAsks()
     {
         KillTimer(hwndMain, (IntPtr)TIMER_ASKS);
@@ -1690,31 +1723,16 @@ atalhos_data2=sim
         busyText = text;
         busyState = 0;
         busyFrame = 0;
-        if (hwndBusy == IntPtr.Zero)
-            hwndBusy = CreateWindowExW(0x8 | 0x80 | 0x08000000, "ClipAtalhoBusy", "", 0x80000000, 0, 0, 10, 10, IntPtr.Zero, IntPtr.Zero, hInst, IntPtr.Zero);
-        if (hwndBusy == IntPtr.Zero) return;
-        int w = Px(340), h = Px(64), x, y;
+        StartTrayAnim(); // o ícone perto do relógio pisca enquanto trabalha
         RECT o;
-        if (MgrInFront() && GetWindowRect(hwndMgr, out o)) // janela do programa em uso: no meio dela
-        {
-            x = o.Left + (o.Right - o.Left - w) / 2;
-            y = o.Top + (o.Bottom - o.Top - h) / 2;
-        }
-        else // em segundo plano: perto do relógio
-        {
-            POINT corner = new POINT();
-            corner.X = GetSystemMetrics(0) - 1;
-            corner.Y = GetSystemMetrics(1) - 1;
-            RECT work = new RECT();
-            work.Right = GetSystemMetrics(0);
-            work.Bottom = GetSystemMetrics(1);
-            MONITORINFO mi = new MONITORINFO();
-            mi.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
-            if (GetMonitorInfoW(MonitorFromPoint(corner, 1), ref mi)) work = mi.rcWork;
-            x = work.Right - w - Px(14);
-            y = work.Bottom - h - Px(14);
-        }
-        SetWindowPos(hwndBusy, (IntPtr)(-1), x, y, w, h, 0x10 | 0x40); // no topo, sem ativar
+        if (!MgrInFront() || !GetWindowRect(hwndMgr, out o)) return; // em outro programa: só o ícone da bandeja avisa
+        if (hwndBusy != IntPtr.Zero) { DestroyWindow(hwndBusy); hwndBusy = IntPtr.Zero; }
+        // presa à janela do ClipAtalho: fica na frente dela, mas não na frente dos outros programas
+        hwndBusy = CreateWindowExW(0x80 | 0x08000000, "ClipAtalhoBusy", "", 0x80000000, 0, 0, 10, 10, hwndMgr, IntPtr.Zero, hInst, IntPtr.Zero);
+        if (hwndBusy == IntPtr.Zero) return;
+        int w = Px(340), h = Px(64);
+        int x = o.Left + (o.Right - o.Left - w) / 2, y = o.Top + (o.Bottom - o.Top - h) / 2;
+        SetWindowPos(hwndBusy, IntPtr.Zero, x, y, w, h, 0x10 | 0x40); // sem ativar
         RoundWindow(hwndBusy, w, h);
         InvalidateRect(hwndBusy, IntPtr.Zero, false);
         UpdateWindow(hwndBusy);
@@ -1723,6 +1741,8 @@ atalhos_data2=sim
 
     static void BusyDone(string text)
     {
+        TrayDone(true);
+        FlashIfAway();
         if (hwndBusy == IntPtr.Zero || !IsWindowVisible(hwndBusy)) return;
         busyState = 1;
         busyText = text;
@@ -1734,6 +1754,7 @@ atalhos_data2=sim
 
     static void BusyHide()
     {
+        if (trayState == 1) TrayNormal();
         KillTimer(hwndMain, (IntPtr)TIMER_BUSY);
         if (hwndBusy != IntPtr.Zero) ShowWindow(hwndBusy, 0);
     }
@@ -1798,6 +1819,286 @@ atalhos_data2=sim
         }
         catch { }
         return DefWindowProcW(hwnd, m, wParam, lParam);
+    }
+
+    // ------------------------------------------------------------------ ganchos de teclado e mouse numa linha de execução só deles
+    static Thread hookThread;
+    static uint hookTid;
+    static int hookErr, lastHookTick, lastRehookTick, lastRehookLog;
+    static bool rehookLogged;
+    static string hookExpandAbbr;
+    static readonly ManualResetEvent hookReady = new ManualResetEvent(false);
+    const uint WM_REHOOK = 0x0400 + 77;
+
+    static void HookThreadMain()
+    {
+        hookTid = GetCurrentThreadId();
+        InstallHooks();
+        SetTimer(IntPtr.Zero, IntPtr.Zero, 3000, IntPtr.Zero); // vigia: a cada 3 segundos
+        hookReady.Set();
+        MSG msg;
+        while (GetMessageW(out msg, IntPtr.Zero, 0, 0) > 0)
+        {
+            if (msg.hwnd == IntPtr.Zero && msg.message == WM_TIMER) { HookWatch(); continue; }
+            if (msg.hwnd == IntPtr.Zero && msg.message == WM_REHOOK) { InstallHooks(); continue; }
+            TranslateMessage(ref msg);
+            DispatchMessageW(ref msg);
+        }
+        if (hHook != IntPtr.Zero) UnhookWindowsHookEx(hHook);
+        if (hMouseHook != IntPtr.Zero) UnhookWindowsHookEx(hMouseHook);
+    }
+
+    static void InstallHooks()
+    {
+        if (hHook != IntPtr.Zero) UnhookWindowsHookEx(hHook);
+        if (hMouseHook != IntPtr.Zero) UnhookWindowsHookEx(hMouseHook);
+        hHook = SetWindowsHookExW(13, Marshal.GetFunctionPointerForDelegate(hookProcRef), hInst, 0);
+        if (hHook == IntPtr.Zero) hookErr = Marshal.GetLastWin32Error();
+        hMouseHook = SetWindowsHookExW(14, Marshal.GetFunctionPointerForDelegate(mouseProcRef), hInst, 0);
+        lastHookTick = Environment.TickCount;
+    }
+
+    // O Windows desliga em silêncio um gancho que demorou a responder. Se houve teclado/mouse e o gancho não viu, religa.
+    static void HookWatch()
+    {
+        LASTINPUTINFO li = new LASTINPUTINFO();
+        li.cbSize = 8;
+        if (!GetLastInputInfo(ref li)) return;
+        int input = (int)li.dwTime, now = Environment.TickCount;
+        if (input - lastHookTick > 1500 && now - input < 60000 && now - lastRehookTick > 15000)
+        {
+            lastRehookTick = now;
+            InstallHooks();
+            if (!rehookLogged || now - lastRehookLog > 600000)
+            {
+                rehookLogged = true;
+                lastRehookLog = now;
+                Log("Gancho de teclado/mouse não respondia: religado automaticamente" + (hHook == IntPtr.Zero ? " (FALHOU)" : ""));
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ ícone da bandeja: pisca trabalhando, mostra concluído/erro
+    static IntPtr hIconBusy, hIconOk, hIconErr;
+    static int trayState, trayPhase; // 0 normal, 1 trabalhando, 2 concluído, 3 erro (até clicar no ícone)
+
+    static IntPtr MakeIconDot(int size, uint dot)
+    {
+        IntPtr bmp, g, icon;
+        if (!gdipOK || GdipCreateBitmapFromScan0(size, size, 0, 0x26200A, IntPtr.Zero, out bmp) != 0) return IntPtr.Zero;
+        if (GdipGetImageGraphicsContext(bmp, out g) != 0) { GdipDisposeImage(bmp); return IntPtr.Zero; }
+        GdipSetSmoothingMode(g, 4);
+        FillRound(g, 1, 1, size - 2, size - 2, size * 0.24f, A_ACCENT, 0);
+        float bh = size * 0.11f;
+        for (int k = 0; k < 3; k++)
+            FillRound(g, size * 0.25f, size * (0.26f + 0.19f * k), size * (k == 2 ? 0.32f : 0.5f), bh, bh / 2, 0xFFFFFFFF, 0);
+        FillRound(g, size * 0.50f, size * 0.50f, size * 0.48f, size * 0.48f, size * 0.24f, 0xFFFFFFFF, 0);
+        FillRound(g, size * 0.56f, size * 0.56f, size * 0.36f, size * 0.36f, size * 0.18f, dot, 0);
+        GdipDeleteGraphics(g);
+        if (GdipCreateHICONFromBitmap(bmp, out icon) != 0) icon = IntPtr.Zero;
+        GdipDisposeImage(bmp);
+        return icon;
+    }
+
+    static void SetTrayIcon(IntPtr ic)
+    {
+        if (!trayReady || ic == IntPtr.Zero) return;
+        nid.uFlags = 2;
+        nid.hIcon = ic;
+        Shell_NotifyIconW(1, ref nid);
+    }
+
+    static void EnsureTrayIcons()
+    {
+        if (hIconBusy == IntPtr.Zero) hIconBusy = MakeIconDot(32, 0xFFFACC15);
+        if (hIconOk == IntPtr.Zero) hIconOk = MakeIconDot(32, 0xFF22C55E);
+        if (hIconErr == IntPtr.Zero) hIconErr = MakeIconDot(32, 0xFFEF4444);
+    }
+
+    static void StartTrayAnim()
+    {
+        EnsureTrayIcons();
+        trayState = 1;
+        trayPhase = 0;
+        SetTrayIcon(hIconBusy);
+        SetTimer(hwndMain, (IntPtr)TIMER_TRAY, 450, IntPtr.Zero);
+    }
+
+    static void TrayDone(bool ok)
+    {
+        EnsureTrayIcons();
+        KillTimer(hwndMain, (IntPtr)TIMER_TRAY);
+        trayState = ok ? 2 : 3;
+        SetTrayIcon(ok ? hIconOk : hIconErr);
+        if (ok) SetTimer(hwndMain, (IntPtr)TIMER_TRAY, 6000, IntPtr.Zero);
+        if (trayReady)
+        {
+            nid.uFlags = 4;
+            nid.szTip = Fit(ok ? "ClipAtalho - nuvem em dia (" + DateTime.Now.ToString("HH:mm") + ")" : "ClipAtalho - falha na nuvem: abra o programa para ver", 127);
+            Shell_NotifyIconW(1, ref nid);
+        }
+    }
+
+    static void TrayNormal()
+    {
+        KillTimer(hwndMain, (IntPtr)TIMER_TRAY);
+        trayState = 0;
+        SetTrayIcon(hAppIcon);
+        SetTip();
+    }
+
+    static void OnTrayTimer()
+    {
+        if (trayState == 1) { trayPhase ^= 1; SetTrayIcon(trayPhase == 1 ? hAppIcon : hIconBusy); return; }
+        TrayNormal();
+    }
+
+    // ------------------------------------------------------------------ área de transferência: tirar a figura que veio junto com o texto
+    static readonly string[] OfficeProcs = { "excel", "winword", "powerpnt", "onenote", "onenotem", "outlook", "mspub", "visio", "msaccess", "soffice.bin", "wps", "et", "wpp" };
+    static readonly string[] StripNames = { "PNG", "JFIF", "GIF", "Ole Private Data", "DataObject", "Object Descriptor", "Link Source Descriptor",
+        "Embed Source", "Link Source", "Embedded Object", "Native", "OwnerLink", "ObjectLink", "FileContents", "FileGroupDescriptor", "FileGroupDescriptorW" };
+
+    static bool OwnerIsOffice()
+    {
+        try
+        {
+            IntPtr ow = GetClipboardOwner();
+            if (ow == IntPtr.Zero) return false;
+            uint pid;
+            GetWindowThreadProcessId(ow, out pid);
+            return Array.IndexOf(OfficeProcs, Process.GetProcessById((int)pid).ProcessName.ToLowerInvariant()) >= 0;
+        }
+        catch { return false; }
+    }
+
+    // Regrava a área de transferência com tudo menos as figuras (o texto e a formatação ficam).
+    static bool StripImages()
+    {
+        if (!OpenClip()) return false;
+        List<uint> fmts = new List<uint>();
+        List<byte[]> datas = new List<byte[]>();
+        try
+        {
+            uint f = 0;
+            while ((f = EnumClipboardFormats(f)) != 0)
+            {
+                if (f < 0xC000 && f != 13 && f != 16) continue; // dos formatos do Windows, fica só o texto (Unicode) e o idioma
+                if (f >= 0xC000)
+                {
+                    StringBuilder nb = new StringBuilder(128);
+                    GetClipboardFormatNameW(f, nb, 128);
+                    string n = nb.ToString();
+                    if (Array.IndexOf(StripNames, n) >= 0 || n.StartsWith("image/", StringComparison.OrdinalIgnoreCase)) continue;
+                }
+                IntPtr h = GetClipboardData(f);
+                if (h == IntPtr.Zero) continue;
+                ulong sz = (ulong)GlobalSize(h);
+                if (sz == 0 || sz > 64UL * 1024 * 1024) continue;
+                IntPtr p = GlobalLock(h);
+                if (p == IntPtr.Zero) continue;
+                byte[] b = new byte[(int)sz];
+                Marshal.Copy(p, b, 0, b.Length);
+                GlobalUnlock(h);
+                fmts.Add(f);
+                datas.Add(b);
+            }
+            if (!fmts.Contains(13)) return false; // sem texto: não mexe
+            EmptyClipboard();
+            for (int i = 0; i < fmts.Count; i++)
+            {
+                IntPtr g = GlobalAlloc(2, (UIntPtr)(uint)datas[i].Length);
+                IntPtr q = GlobalLock(g);
+                Marshal.Copy(datas[i], 0, q, datas[i].Length);
+                GlobalUnlock(g);
+                SetClipboardData(fmts[i], g);
+            }
+            return true;
+        }
+        catch (Exception e) { Log("Tirar figura da cópia falhou: " + e.Message); return false; }
+        finally { CloseClipboard(); }
+    }
+
+    // ------------------------------------------------------------------ modo administrador (opcional)
+    static bool adminMode;
+    static Mutex appMutex;
+
+    static bool IsElevated()
+    {
+        try { return new System.Security.Principal.WindowsPrincipal(System.Security.Principal.WindowsIdentity.GetCurrent()).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator); }
+        catch { return false; }
+    }
+
+    static bool StartElevated()
+    {
+        try
+        {
+            ProcessStartInfo psi = new ProcessStartInfo(System.Reflection.Assembly.GetExecutingAssembly().Location, "--elevado");
+            psi.UseShellExecute = true;
+            psi.Verb = "runas";
+            psi.WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory;
+            Process.Start(psi);
+            return true;
+        }
+        catch (Exception e) { Log("Abrir como administrador: " + e.Message); return false; }
+    }
+
+    static void ToggleAdmin()
+    {
+        if (packaged) { Info("Na versão da Microsoft Store o Windows não permite abrir como administrador.\nUse a versão portátil (GitHub) se precisar disso."); return; }
+        adminMode = !adminMode;
+        SaveLocal();
+        RepaintAll();
+        if (adminMode && !IsElevated())
+        {
+            dlgEscResult = 2;
+            dlgPrimary = 2;
+            dlgRedNote = "O Windows vai pedir confirmação (\"Deseja permitir que este aplicativo faça alterações?\") agora e toda vez que o ClipAtalho abrir, inclusive ao ligar o computador.";
+            int r = AskDialog("Abrir como administrador", "Para valer, o ClipAtalho precisa fechar e abrir de novo como administrador.",
+                "Reabrir agora", "Na próxima vez", null);
+            dlgRedNote = "";
+            if (r != 1) return;
+            if (!ResolveDirty(true)) return;
+            SaveClips();
+            if (StartElevated())
+            {
+                Log("Reabrindo como administrador");
+                if (trayReady) Shell_NotifyIconW(2, ref nid);
+                try { appMutex.ReleaseMutex(); } catch { }
+                if (hookTid != 0) PostThreadMessageW(hookTid, 0x0012, IntPtr.Zero, IntPtr.Zero);
+                Environment.Exit(0);
+            }
+            else Info("O Windows não confirmou. O ClipAtalho continua aberto no modo normal.");
+        }
+        else if (!adminMode && IsElevated()) Info("Pronto. Na próxima vez que abrir, o ClipAtalho volta ao modo normal.");
+    }
+
+    // ------------------------------------------------------------------ dicas ao passar o mouse (explicam o que a chave afeta)
+    static IntPtr hTip;
+
+    static void AddTip(int id, string text)
+    {
+        IntPtr ctl = GetDlgItem(hwndMgr, id);
+        if (hTip == IntPtr.Zero || ctl == IntPtr.Zero) return;
+        TOOLINFO ti = new TOOLINFO();
+        ti.cbSize = Marshal.SizeOf(typeof(TOOLINFO));
+        ti.uFlags = 0x1 | 0x10; // TTF_IDISHWND | TTF_SUBCLASS
+        ti.hwnd = hwndMgr;
+        ti.uId = ctl;
+        ti.lpszText = text;
+        SendMessageTip(hTip, 0x0432, IntPtr.Zero, ref ti); // TTM_ADDTOOLW
+    }
+
+    static void AddTips()
+    {
+        try { InitCommonControls(); } catch { }
+        hTip = CreateWindowExW(0x8, "tooltips_class32", null, 0x80000000 | 0x1 | 0x2, 0, 0, 0, 0, hwndMgr, IntPtr.Zero, hInst, IntPtr.Zero);
+        if (hTip == IntPtr.Zero) return;
+        SendMessageW(hTip, 0x0418, IntPtr.Zero, (IntPtr)Px(420));   // TTM_SETMAXTIPWIDTH: quebra em linhas
+        SendMessageW(hTip, 0x0403, (IntPtr)2, (IntPtr)30000);       // TTDT_AUTOPOP: fica 30 s
+        SendMessageW(hTip, 0x0403, (IntPtr)3, (IntPtr)300);         // TTDT_INITIAL: aparece rápido
+        AddTip(IDC_T_TEXTONLY, "Colar só o texto: quando um programa copia texto e uma figura juntos (alguns sistemas e páginas fazem isso), o ClipAtalho tira a figura e deixa só o texto, com a formatação. Assim o Ctrl+V e o Win+V colam texto em qualquer programa.\r\n\r\nEfeito colateral: para colar uma cópia dessas como figura (no Paint, por exemplo), desligue esta opção. Cópias do Excel, Word, PowerPoint, OneNote e Outlook não são alteradas.");
+        AddTip(IDC_T_ADMIN, "Abrir como administrador: o ClipAtalho passa a funcionar também por cima de programas abertos como administrador (atalhos, expansões e a lista do Ctrl+0).\r\n\r\nEfeito colateral: o Windows pede confirmação (\"Deseja permitir que este aplicativo faça alterações?\") toda vez que o ClipAtalho abre, inclusive ao ligar o computador. Por isso vem desligado.");
+        AddTip(IDC_T_IMAGES, "Guarda também imagens copiadas (prints, figuras) na lista de clips. Desligado, só textos são guardados.");
     }
 
     // ------------------------------------------------------------------ lista de clips
@@ -2509,6 +2810,12 @@ atalhos_data2=sim
         string t = GetClipboardText();
         bool hasImg = cfgImages && (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_BITMAP) || HasImageFiles());
         bool onlyLink = t != null && LooksLikeLink(t); // ex.: navegador que copia a imagem junto com o endereço dela
+        // Programa que copia texto + figura juntos (ex.: alguns sistemas): tira a figura para o Ctrl+V e o Win+V colarem texto.
+        if (cfgTextOnly && t != null && t.Trim().Length > 0 && !onlyLink && (IsClipboardFormatAvailable(CF_DIB) || IsClipboardFormatAvailable(CF_BITMAP)) &&
+            !IsClipboardFormatAvailable(15) && !OwnerIsOffice())
+        {
+            if (StripImages()) { hasImg = false; Log("Cópia com texto e figura juntos: figura retirada (fica só o texto)"); }
+        }
         if (t != null && t.Trim().Length > 0 && !(hasImg && onlyLink)) // havendo texto, ele tem preferência (ex.: células do Excel)
         {
             Clip tc = new Clip(t, false);
@@ -3139,11 +3446,11 @@ atalhos_data2=sim
         IDC_UNDO = 192, IDC_REDO = 193, IDC_XUNDO = 194, IDC_XREDO = 195, IDC_CUNDO = 196, IDC_CREDO = 197, IDC_LIMIT = 198, IDC_IN_EDIT = 214,
         IDC_SEG3 = 220, IDC_CLOUDPROV = 221, IDC_CLOUDCONN = 222, IDC_CLOUDUP = 223, IDC_CLOUDDOWN = 224, IDC_CLOUDMODE = 225,
         IDC_T_CLOUDCHECK = 226, IDC_DATEFMT = 227, IDC_YEARFMT = 228, IDC_T_DATEKEY = 229, IDC_HOURFMT = 230,
-        IDC_SEARCH = 231, IDC_XSEARCH = 232, IDC_TOEXP = 233, IDC_GOCLOUD = 234, IDC_T_CLOUDLIVE = 235, IDC_T_CLOUDLIVEIMG = 236, IDC_DATEHOT = 237, IDC_MOUSEBTN = 238,
+        IDC_SEARCH = 231, IDC_XSEARCH = 232, IDC_TOEXP = 233, IDC_GOCLOUD = 234, IDC_T_CLOUDLIVE = 235, IDC_T_CLOUDLIVEIMG = 236, IDC_DATEHOT = 237, IDC_MOUSEBTN = 238, IDC_SAVENEW = 165, IDC_T_TEXTONLY = 166, IDC_T_ADMIN = 167, IDC_CLOUDVERS = 168,
         IDC_FB_SUG = 210, IDC_FB_REC = 211, IDC_FB_MAIL = 212, IDC_FB_MSG = 213;
     const string RUNKEY = @"Software\Microsoft\Windows\CurrentVersion\Run";
     const string INSTAGRAM = "https://www.instagram.com/talespsg";
-    const string VERSION = "1.5.0 20-11-2026";
+    const string VERSION = "1.5.1 24-11-2026";
     static readonly string[] PageTitles = { "Seus clips", "Atalhos por Expansão", "Configurações", "Ajuda", "Configurações", "Configurações" };
     static readonly string[] ModNames = { "Ctrl", "Shift", "Alt", "Win" };
     static readonly uint[] ModBits = { 2, 4, 1, 8 };
@@ -3220,10 +3527,11 @@ atalhos_data2=sim
         Btn(54, 486, 34, 36, IDC_DOWN, 0);
         Btn(92, 486, 136, 36, IDC_CLEAR, 0);
         Btn(232, 486, 120, 36, IDC_DELPIN, 0);
-        Btn(362, 486, 124, 36, IDC_SAVE, 0);
-        Btn(494, 486, 98, 36, IDC_NEW, 0);
-        Btn(600, 486, 98, 36, IDC_PIN, 0);
-        Btn(706, 486, 98, 36, IDC_DEL, 0);
+        Btn(362, 486, 112, 36, IDC_SAVENEW, 0);
+        Btn(480, 486, 80, 36, IDC_SAVE, 0);
+        Btn(566, 486, 76, 36, IDC_NEW, 0);
+        Btn(648, 486, 80, 36, IDC_PIN, 0);
+        Btn(734, 486, 70, 36, IDC_DEL, 0);
 
         // página 1: atalhos por expansão
         hXSearch = Child(hwndMgr, "EDIT", "", 0x10000 | 0x80, 46, 120, 300, 20, IDC_XSEARCH, 1);
@@ -3240,8 +3548,8 @@ atalhos_data2=sim
         Btn(16, 486, 40, 36, IDC_XUP, 1);
         Btn(62, 486, 40, 36, IDC_XDOWN, 1);
         Btn(108, 486, 244, 36, IDC_XCLEAR, 1);
-        Btn(362, 486, 80, 36, IDC_XSAVE, 1);
-        Btn(450, 486, 100, 36, IDC_XSAVENEW, 1);
+        Btn(362, 486, 104, 36, IDC_XSAVENEW, 1);
+        Btn(472, 486, 80, 36, IDC_XSAVE, 1);
         Btn(558, 486, 72, 36, IDC_XNEW, 1);
         Btn(638, 486, 84, 36, IDC_XPIN, 1);
         Btn(730, 486, 74, 36, IDC_XDEL, 1);
@@ -3251,10 +3559,12 @@ atalhos_data2=sim
         Btn(36, 198, 76, 30, IDC_THEME, 2);
         Btn(120, 198, 76, 30, IDC_THEME + 1, 2);
         for (int i = 0; i < ColorRgb.Length; i++) Btn(322 + i * 38, 198, 30, 30, IDC_COLOR + i, 2);
-        Btn(36, 256, 740, 30, IDC_T_STARTUP, 2);
+        Btn(36, 256, 366, 30, IDC_T_STARTUP, 2);
+        Btn(410, 256, 366, 30, IDC_T_ADMIN, 2);
         Btn(36, 288, 740, 30, IDC_T_SAVEALL, 2);
         Btn(36, 320, 740, 30, IDC_T_EXPAND, 2);
-        Btn(36, 352, 740, 30, IDC_T_IMAGES, 2);
+        Btn(36, 352, 366, 30, IDC_T_IMAGES, 2);
+        Btn(410, 352, 366, 30, IDC_T_TEXTONLY, 2);
         Btn(36, 384, 420, 30, IDC_T_DATEKEY, 2);
         Btn(464, 384, 312, 30, IDC_DATEHOT, 2);
         Btn(96, 422, 196, 30, IDC_DATEFMT, 2);
@@ -3274,6 +3584,7 @@ atalhos_data2=sim
         Btn(36, 204, 362, 52, IDC_CLOUDUP, 5);
         Btn(412, 204, 364, 52, IDC_CLOUDDOWN, 5);
         Btn(36, 326, 480, 32, IDC_CLOUDMODE, 5);
+        Btn(524, 326, 252, 32, IDC_CLOUDVERS, 5);
         Btn(36, 362, 740, 30, IDC_T_CLOUDCHECK, 5);
         Btn(36, 396, 740, 30, IDC_T_CLOUDLIVE, 5);
         Btn(76, 428, 700, 30, IDC_T_CLOUDLIVEIMG, 5);
@@ -3290,6 +3601,8 @@ atalhos_data2=sim
         Btn(36, 334, 150, 32, IDC_DATADIR, 4);
         Btn(414, 334, 362, 32, IDC_CONFLICT, 4);
         Btn(36, 422, 260, 34, IDC_FACTORY, 4);
+
+        AddTips();
 
         // desfazer / refazer nos cartões de edição
         Btn(734, 82, 28, 24, IDC_UNDO, 0);
@@ -3361,6 +3674,7 @@ atalhos_data2=sim
 
         IntPtr oldIcon = hAppIcon;
         hAppIcon = MakeIcon(32);
+        hIconBusy = hIconOk = hIconErr = IntPtr.Zero; // refeitos com a cor nova
         if (trayReady && hAppIcon != IntPtr.Zero)
         {
             nid.uFlags = 2; // NIF_ICON
@@ -3697,7 +4011,9 @@ atalhos_data2=sim
             "•  Leve clips, imagens, atalhos e configurações para outro computador: \"Enviar para a nuvem\" num computador e \"Baixar da nuvem\" no outro. Antes de substituir, o programa mostra a data, a hora e o computador do backup que já está lá.\n" +
             "•  Onde guardar: OneDrive, direto pela internet, sem instalar nada (o login é feito uma vez, na página da Microsoft, e o ClipAtalho só enxerga a própria pasta Aplicativos › ClipAtalho), ou uma pasta do Google Drive, Dropbox, rede ou pendrive.\n" +
             "•  Depois de alterar algo, o programa pergunta se deseja enviar (ou envia sozinho, se preferir). Ao abrir, avisa se outro computador enviou uma versão mais nova.\n" +
-            "•  Essas perguntas não pulam na frente do que você está fazendo: o ícone do ClipAtalho pisca na barra de tarefas e a pergunta aparece quando você voltar para ele. Enquanto envia ou baixa, aparece a janelinha \"Aguarde…\" (perto do relógio, se você estiver em outro programa).\n\n" +
+            "•  Mesclar: junta a nuvem com este computador sem perder nada. O que foi incluído em qualquer um entra; o que foi excluído continua excluído; se o mesmo atalho foi mudado nos dois de jeitos diferentes, fica o daqui e o de lá entra como cópia (ex.: bd12). Com \"Sempre enviar\" ligado, o envio é feito em segundo plano e a mesclagem é automática.\n" +
+            "•  Versões anteriores: cada envio guarda uma cópia datada na nuvem (ficam as 10 últimas). Em \"Versões anteriores na nuvem…\" dá para mesclar ou voltar a qualquer uma.\n" +
+            "•  Essas perguntas não pulam na frente do que você está fazendo: o ícone do ClipAtalho pisca na barra de tarefas e a pergunta aparece quando você voltar para ele. Enquanto envia ou baixa, aparece a janelinha \"Aguarde…\" na janela do programa, e o ícone perto do relógio pisca (amarelo trabalhando, verde concluído, vermelho com erro).\n\n" +
             "•  Tempo real (opcional): o que você copiar num computador aparece no outro em poucos segundos, pronto para colar. Imagens só se você ligar essa opção.\n\n" +
             "PESQUISAR\n" +
             "•  Nas telas Clips e Atalhos por Expansão: clique em \"Pesquisar…\" (ou Ctrl+F) e digite; a lista vai afunilando. Vale o texto e, nas expansões, também o atalho. Esc limpa.\n" +
@@ -3919,6 +4235,7 @@ atalhos_data2=sim
         editDirty = dirty;
         InvalidateRect(hwndMgr, IntPtr.Zero, true);
         InvalidateRect(GetDlgItem(hwndMgr, IDC_SAVE), IntPtr.Zero, true);
+        InvalidateRect(GetDlgItem(hwndMgr, IDC_SAVENEW), IntPtr.Zero, true);
     }
 
     static int AskSave(string what)
@@ -4997,7 +5314,7 @@ atalhos_data2=sim
     {
         Clip src = convertFrom;
         convertFrom = null;
-        if (src == null || !clips.Contains(src)) return;
+        if (src == null || !clips.Contains(src) || src != null) return; // 1.5.1: mantém o clip também (sem perguntar)
         dlgEscResult = 2;
         dlgPrimary = 2;
         dlgRedNote = src.Pinned ? "Atenção: este clip está FIXADO. \"Remover Duplicata\" também o tira da sua lista de clips fixados." : "";
@@ -5405,22 +5722,36 @@ atalhos_data2=sim
         if (st >= 300) throw new Exception("OneDrive respondeu " + st + " ao gravar " + name + ": " + (JStr(Encoding.UTF8.GetString(r), "message") ?? ""));
     }
 
-    static List<string> CloudListImages()
+    static List<string> CloudListImages() { return CloudListFolder("imagens"); }
+
+    static void CloudDelete(string name)
+    {
+        if (cloudProv == 2)
+        {
+            string f = Path.Combine(CloudFolder, name.Replace('/', '\\'));
+            if (File.Exists(f)) File.Delete(f);
+            return;
+        }
+        int st;
+        OneDrive("DELETE", GPath(name), null, out st);
+    }
+
+    static List<string> CloudListFolder(string folder)
     {
         List<string> names = new List<string>();
         if (cloudProv == 2)
         {
-            string d = Path.Combine(CloudFolder, "imagens");
-            if (Directory.Exists(d)) foreach (string f in Directory.GetFiles(d, "img_*.png")) names.Add(Path.GetFileName(f));
+            string d = Path.Combine(CloudFolder, folder);
+            if (Directory.Exists(d)) foreach (string f in Directory.GetFiles(d)) names.Add(Path.GetFileName(f));
             return names;
         }
-        string url = GPath("imagens") + ":/children?$select=name&$top=500";
+        string url = GPath(folder) + ":/children?$select=name&$top=500";
         while (url != null)
         {
             int st;
             string j = Encoding.UTF8.GetString(OneDrive("GET", url, null, out st));
             if (st == 404) break;
-            if (st >= 300) throw new Exception("OneDrive respondeu " + st + " ao listar as imagens");
+            if (st >= 300) throw new Exception("OneDrive respondeu " + st + " ao listar " + folder);
             foreach (Match m in Regex.Matches(j, "\"name\"\\s*:\\s*\"([^\"]+)\"")) names.Add(m.Groups[1].Value);
             url = JStr(j, "@odata.nextLink");
         }
@@ -5473,69 +5804,64 @@ atalhos_data2=sim
     static void CloudError(string what, string err, bool quiet)
     {
         Log("Nuvem: falha ao " + what + ": " + err);
+        TrayDone(false);
+        string em = "Não foi possível " + what + ":\n" + err;
         if (quiet) Balloon("ClipAtalho", "Não foi possível " + what + ": " + err);
-        else Info("Não foi possível " + what + ":\n" + err);
+        else if (!MgrInFront()) AskLater(delegate { Info(em); }); // mostra quando a pessoa voltar para o programa
+        else Info(em);
         RepaintAll();
     }
 
     static string ImgNameOf(Clip c) { return c.ImgFile ?? ("img_" + c.Hash + ".png"); }
 
-    // ☁↑ Enviar: confirma (mostrando o backup que já está na nuvem) e envia tudo.
+    // ☁↑ Enviar: se a nuvem tem alterações de outro computador, oferece mesclar (nada se perde) ou substituir.
     static void CloudUpload(bool ask, bool quiet)
     {
         if (!CloudReady()) { if (!quiet) CloudConnButton(); return; }
-        if (!quiet && hwndMgr != IntPtr.Zero && IsWindowVisible(hwndMgr) && !ResolveDirty(false)) return;
+        if (quiet) { CloudSyncBg(); return; }
+        if (hwndMgr != IntPtr.Zero && IsWindowVisible(hwndMgr) && !ResolveDirty(false)) return;
         CloudInfo remote = null;
         string err = RunWorker(delegate { remote = CloudReadInfo(); return null; }, "Consultando a nuvem…");
         if (err != null) { CloudError("consultar a nuvem", err, quiet); return; }
         cloudInfo = remote;
         bool foreign = remote != null && remote.Stamp != cloudLastSync && remote.Machine != Environment.MachineName;
-        if (remote != null && (ask || foreign))
+        bool merge = false;
+        if (foreign)
         {
-            dlgEscResult = 2;
+            dlgEscResult = 3;
             dlgPrimary = 1;
-            dlgWarn = foreign;
-            int r = AskDialog("Substituir o backup da nuvem?",
-                "Já existe um backup na nuvem, " + InfoText(remote) + "." +
-                (foreign ? "\nATENÇÃO: ele veio de outro computador depois da última sincronização deste. Se substituir, o que foi feito lá se perde (baixe antes, se precisar)." : "") +
-                "\nSubstituir pelo deste computador (" + clips.Count + " clips, " + cfgAbbr.Count + " atalhos)?",
-                "Substituir", "Cancelar", null);
-            dlgWarn = false;
-            if (r != 1) return;
+            dlgRedNote = "\"Substituir\" apaga da nuvem o que foi feito no outro computador (fica só em Versões anteriores).";
+            int r = AskDialog("A nuvem tem alterações de outro computador",
+                "Na nuvem: " + InfoText(remote) + ".\n\"Mesclar e enviar\" junta o que tem lá com o deste computador, sem perder nada (o que foi excluído continua excluído).",
+                "Mesclar e enviar", "Substituir o da nuvem", "Cancelar");
+            dlgRedNote = "";
+            if (r != 1 && r != 2) return;
+            merge = r == 1;
         }
-        string ini = ReadIni() ?? "";
-        List<string> imgs = new List<string>();
-        foreach (Clip c in clips) if (c.IsImage && EnsureImageFile(c)) imgs.Add(ImgNameOf(c));
-        DateTime now = DateTime.Now;
-        string info = "; ClipAtalho - backup na nuvem\r\ndata=" + now.ToString("yyyyMMddHHmmss") + "\r\ncomputador=" + Environment.MachineName +
-            "\r\nclips=" + clips.Count + "\r\natalhos=" + cfgAbbr.Count + "\r\nversao=" + VERSION + "\r\n";
-        string imgDir = ImgDir;
+        string ini = ReadIni() ?? "", baseIni = ReadTextFile(CloudBasePath), imgDir = ImgDir, result = ini, info = "";
+        bool merged = false;
         err = RunWorker(delegate
         {
-            List<string> have = CloudListImages();
-            foreach (string f in imgs)
+            if (merge)
             {
-                if (have.Contains(f)) continue;
-                string lp = Path.Combine(imgDir, f);
-                if (File.Exists(lp)) CloudPut("imagens/" + f, File.ReadAllBytes(lp));
+                byte[] rb = CloudGet("ClipAtalho.ini");
+                if (rb != null)
+                {
+                    result = MergeIni(ini, Encoding.UTF8.GetString(rb).TrimStart((char)0xFEFF), baseIni, true);
+                    merged = true;
+                    DownloadMissingImages(result, imgDir);
+                }
             }
-            CloudPut("ClipAtalho.ini", Encoding.UTF8.GetBytes(ini));
-            CloudPut("ClipAtalho-info.txt", Encoding.UTF8.GetBytes(info)); // por último: só fica valendo se tudo subiu
+            info = UploadAll(result, imgDir);
             return null;
         }, "Enviando para a nuvem…");
-        if (err != null) { CloudError("enviar para a nuvem", err, quiet); return; }
-        cloudInfo = ParseInfo(info);
-        cloudLastSync = cloudInfo.Stamp;
-        cloudDirty = false;
-        SaveLocal();
-        Log("Nuvem: enviado (" + clips.Count + " clips, " + cfgAbbr.Count + " atalhos)");
-        RepaintAll();
-        if (quiet) Balloon("ClipAtalho", "Alterações enviadas para a nuvem.");
-        else Info("Pronto: enviado para a nuvem.");
+        if (err != null) { CloudError("enviar para a nuvem", err, false); return; }
+        if (merged && IniSig(result) != IniSig(ini)) ApplyIni(result);
+        FinishSync(result, info, merged ? "enviado (mesclado)" : "enviado");
     }
 
-    // 💻↓ Baixar: mostra o backup da nuvem e, confirmado, substitui os dados deste computador.
-    static void CloudDownload(bool alreadyAsked)
+    // 💻↓ Baixar: preset 0 = perguntar, 1 = mesclar, 2 = substituir pelo da nuvem.
+    static void CloudDownload(int preset)
     {
         if (!CloudReady()) { CloudConnButton(); return; }
         if (hwndMgr != IntPtr.Zero && IsWindowVisible(hwndMgr) && !ResolveDirty(false)) return;
@@ -5545,32 +5871,111 @@ atalhos_data2=sim
         cloudInfo = remote;
         RepaintAll();
         if (remote == null) { Info("Ainda não há backup na nuvem.\nEnvie primeiro, pelo computador que está com os dados atualizados."); return; }
-        if (!alreadyAsked)
+        int mode = preset;
+        if (mode == 0)
         {
-            dlgEscResult = 2;
+            dlgEscResult = 3;
             dlgPrimary = 1;
-            if (AskDialog("Baixar da nuvem?", "Backup na nuvem: " + InfoText(remote) + ".\nOs clips, atalhos e configurações deste computador (" + clips.Count + " clips, " +
-                cfgAbbr.Count + " atalhos) serão substituídos. Uma cópia dos atuais fica guardada na pasta do programa.", "Baixar", "Cancelar", null) != 1) return;
+            dlgRedNote = "\"Substituir\" troca os clips, atalhos e configurações deste computador (" + clips.Count + " clips, " + cfgAbbr.Count +
+                " atalhos) pelos da nuvem. Uma cópia dos atuais fica guardada na pasta do programa.";
+            mode = AskDialog("Baixar da nuvem", "Na nuvem: " + InfoText(remote) +
+                ".\n\"Mesclar\" junta o que tem lá com o deste computador, sem perder nada (o que foi excluído continua excluído).",
+                "Mesclar", "Substituir pelo da nuvem", "Cancelar");
+            dlgRedNote = "";
+            if (mode != 1 && mode != 2) return;
         }
-        string ini = null;
-        string imgDir = ImgDir;
+        string local = ReadIni() ?? "", baseIni = ReadTextFile(CloudBasePath), imgDir = ImgDir, result = null, info = null;
         err = RunWorker(delegate
         {
             byte[] b = CloudGet("ClipAtalho.ini");
             if (b == null) return "o arquivo de dados não está na nuvem";
-            ini = Encoding.UTF8.GetString(b).TrimStart((char)0xFEFF);
-            Directory.CreateDirectory(imgDir);
-            foreach (string f in CloudListImages())
-            {
-                string lp = Path.Combine(imgDir, Path.GetFileName(f));
-                if (File.Exists(lp)) continue;
-                byte[] ib = CloudGet("imagens/" + f);
-                if (ib != null) File.WriteAllBytes(lp, ib);
-            }
+            string rIni = Encoding.UTF8.GetString(b).TrimStart((char)0xFEFF);
+            DownloadMissingImages(rIni, imgDir);
+            if (mode == 2) { result = rIni; return null; }
+            result = MergeIni(local, rIni, baseIni, true);
+            if (IniSig(result) != IniSig(rIni)) info = UploadAll(result, imgDir); // a nuvem também fica com a mesclagem
             return null;
         }, "Baixando da nuvem…");
         if (err != null) { CloudError("baixar da nuvem", err, false); return; }
-        CopyIniAside("antes de baixar da nuvem");
+        if (mode == 2) CopyIniAside("antes de baixar da nuvem");
+        if (mode == 2 || IniSig(result) != IniSig(local)) ApplyIni(result);
+        if (info != null) FinishSync(result, info, "mesclado com a nuvem");
+        else
+        {
+            SaveText(CloudBasePath, result);
+            cloudLastSync = remote.Stamp;
+            cloudDirty = false;
+            KillTimer(hwndMain, (IntPtr)TIMER_CLOUDASK);
+            SaveLocal();
+            Log("Nuvem: " + (mode == 2 ? "baixado (" + remote.Stamp + ")" : "mesclado com a nuvem"));
+            RepaintAll();
+        }
+    }
+
+    // Versões anteriores guardadas na nuvem (as 10 últimas): mesclar com este computador ou substituir.
+    static void CloudVersions()
+    {
+        if (!CloudReady()) { CloudConnButton(); return; }
+        if (hwndMgr != IntPtr.Zero && IsWindowVisible(hwndMgr) && !ResolveDirty(false)) return;
+        List<string> names = null;
+        string err = RunWorker(delegate { names = CloudListFolder("versoes"); return null; }, "Consultando a nuvem…");
+        if (err != null) { CloudError("consultar a nuvem", err, false); return; }
+        names = names.FindAll(delegate(string n) { return n.EndsWith(".ini", StringComparison.OrdinalIgnoreCase); });
+        names.Sort(StringComparer.Ordinal);
+        names.Reverse();
+        if (names.Count == 0) { Info("Ainda não há versões anteriores na nuvem.\nA partir desta versão do ClipAtalho, cada envio guarda uma (ficam as " + CLOUD_VERSIONS + " últimas)."); return; }
+        if (names.Count > CLOUD_VERSIONS) names.RemoveRange(CLOUD_VERSIONS, names.Count - CLOUD_VERSIONS);
+        List<MI> mi = new List<MI>();
+        for (int i = 0; i < names.Count; i++) mi.Add(Item(1 + i, VersionLabel(names[i])));
+        RECT r;
+        GetWindowRect(GetDlgItem(hwndMgr, IDC_CLOUDVERS), out r);
+        int cmd = ShowMenu(mi, r.Left, r.Bottom + Px(4), hwndMgr);
+        if (cmd < 1) return;
+        string name = names[cmd - 1];
+        dlgEscResult = 3;
+        dlgPrimary = 1;
+        dlgRedNote = "\"Substituir\" troca os dados deste computador pelos dessa versão (uma cópia dos atuais fica guardada na pasta do programa).";
+        int mode = AskDialog("Versão de " + VersionLabel(name), "\"Mesclar\" traz de volta para este computador o que só existe nessa versão, sem apagar nada daqui.",
+            "Mesclar", "Substituir por esta versão", "Cancelar");
+        dlgRedNote = "";
+        if (mode != 1 && mode != 2) return;
+        string vIni = null, imgDir = ImgDir;
+        err = RunWorker(delegate
+        {
+            byte[] b = CloudGet("versoes/" + name);
+            if (b == null) return "essa versão não está mais na nuvem";
+            vIni = Encoding.UTF8.GetString(b).TrimStart((char)0xFEFF);
+            DownloadMissingImages(vIni, imgDir);
+            return null;
+        }, "Baixando da nuvem…");
+        if (err != null) { CloudError("baixar a versão", err, false); return; }
+        string local = ReadIni() ?? "";
+        CopyIniAside("antes de recuperar versão da nuvem");
+        string result = mode == 2 ? vIni : MergeIni(local, vIni, null, false);
+        if (IniSig(result) != IniSig(local) || mode == 2) ApplyIni(result);
+        Log("Nuvem: versão " + VersionLabel(name) + (mode == 2 ? " recuperada (substituída)" : " mesclada"));
+        MarkCloudDirty(); // a nuvem recebe o resultado no próximo envio
+        RepaintAll();
+    }
+
+    static string VersionLabel(string name)
+    {
+        // "ClipAtalho 2026-11-24 131500 PC.ini" -> "24/11/2026 13:15 · PC"
+        Match m = Regex.Match(name, @"(\d{4})-(\d{2})-(\d{2}) (\d{2})(\d{2})\d{2} (.+)\.ini$", RegexOptions.IgnoreCase);
+        return m.Success ? m.Groups[3].Value + "/" + m.Groups[2].Value + "/" + m.Groups[1].Value + " " + m.Groups[4].Value + ":" + m.Groups[5].Value + "  ·  " + m.Groups[6].Value : name;
+    }
+
+    const int CLOUD_VERSIONS = 10;
+    static string CloudBasePath { get { return Path.Combine(exeDir, "ClipAtalho.nuvem-base.ini"); } }
+
+    static void SaveText(string path, string text)
+    {
+        try { File.WriteAllText(path, text ?? "", new UTF8Encoding(true)); } catch (Exception e) { Log("FALHA ao gravar " + Path.GetFileName(path) + ": " + e.Message); }
+    }
+
+    // Grava o .ini novo (mesclado/baixado) e recarrega tudo, sem disparar outro envio.
+    static void ApplyIni(string ini)
+    {
         cloudApplying = true;
         try
         {
@@ -5578,13 +5983,349 @@ atalhos_data2=sim
             ReloadAll();
         }
         finally { cloudApplying = false; }
-        cloudLastSync = remote.Stamp;
+    }
+
+    static void FinishSync(string sent, string info, string what)
+    {
+        SaveText(CloudBasePath, sent);
+        cloudInfo = ParseInfo(info);
+        cloudLastSync = cloudInfo.Stamp;
         cloudDirty = false;
         KillTimer(hwndMain, (IntPtr)TIMER_CLOUDASK);
         SaveLocal();
-        Log("Nuvem: baixado (" + remote.Stamp + ")");
+        Log("Nuvem: " + what + " (" + cloudInfo.Clips + " clips, " + cloudInfo.Abbr + " atalhos)");
         RepaintAll();
-        Info("Pronto: dados baixados da nuvem.\n" + clips.Count + " clips e " + cfgAbbr.Count + " atalhos.");
+    }
+
+    // Sobe tudo (roda fora da janela): imagens que faltam, o .ini, uma versão datada (ficam as 10 últimas) e por último o resumo.
+    static string UploadAll(string ini, string imgDir)
+    {
+        DateTime now = DateTime.Now;
+        int nClips = 0;
+        foreach (IniEntry e in ClipEntries(SectionLines(IniSections(ini), "clips"))) if (!e.Key.StartsWith("vaga#")) nClips++;
+        int nAbbr = AbbrEntries(SectionLines(IniSections(ini), "atalhos")).Count;
+        string info = "; ClipAtalho - backup na nuvem\r\ndata=" + now.ToString("yyyyMMddHHmmss") + "\r\ncomputador=" + Environment.MachineName +
+            "\r\nclips=" + nClips + "\r\natalhos=" + nAbbr + "\r\nversao=" + VERSION + "\r\n";
+        List<string> have = CloudListImages();
+        foreach (string f in ImagesIn(ini))
+        {
+            if (have.Contains(f)) continue;
+            string lp = Path.Combine(imgDir, f);
+            if (File.Exists(lp)) CloudPut("imagens/" + f, File.ReadAllBytes(lp));
+        }
+        byte[] data = Encoding.UTF8.GetBytes(ini);
+        CloudPut("ClipAtalho.ini", data);
+        try
+        {
+            CloudPut("versoes/ClipAtalho " + now.ToString("yyyy-MM-dd HHmmss") + " " + Environment.MachineName + ".ini", data);
+            List<string> vs = CloudListFolder("versoes").FindAll(delegate(string n) { return n.EndsWith(".ini", StringComparison.OrdinalIgnoreCase); });
+            vs.Sort(StringComparer.Ordinal);
+            for (int i = 0; i < vs.Count - CLOUD_VERSIONS; i++) CloudDelete("versoes/" + vs[i]);
+        }
+        catch (Exception e) { Log("Nuvem: versão anterior não pôde ser guardada: " + e.Message); }
+        CloudPut("ClipAtalho-info.txt", Encoding.UTF8.GetBytes(info)); // por último: só fica valendo se tudo subiu
+        return info;
+    }
+
+    static List<string> ImagesIn(string ini)
+    {
+        List<string> r = new List<string>();
+        foreach (Match m in Regex.Matches(ini ?? "", @"(?im)^\s*(?:fixo|normal)_img\s*=\s*(.+?)\s*$"))
+        {
+            string f = Path.GetFileName(m.Groups[1].Value);
+            if (f.Length > 0 && !r.Contains(f)) r.Add(f);
+        }
+        return r;
+    }
+
+    static void DownloadMissingImages(string ini, string imgDir)
+    {
+        List<string> need = ImagesIn(ini);
+        if (need.Count == 0) return;
+        Directory.CreateDirectory(imgDir);
+        foreach (string f in need)
+        {
+            string lp = Path.Combine(imgDir, f);
+            if (File.Exists(lp)) continue;
+            byte[] ib = CloudGet("imagens/" + f);
+            if (ib != null) File.WriteAllBytes(lp, ib);
+        }
+    }
+
+    // ---- envio automático em segundo plano: a janela continua livre (nada trava) e, se outro computador mudou algo, mescla sozinho
+    static string bgSnapshot, bgResult, bgInfo, bgErr, pendMerge, pendMergeSnap;
+    static bool bgMerged;
+
+    static void CloudSyncBg()
+    {
+        if (!CloudReady()) return;
+        if (cloudBusy || editDirty || expDirty) { SetTimer(hwndMain, (IntPtr)TIMER_CLOUDASK, 5000, IntPtr.Zero); return; } // espera terminar de editar
+        string ini = ReadIni() ?? "", baseIni = ReadTextFile(CloudBasePath), last = cloudLastSync, imgDir = ImgDir;
+        bgSnapshot = ini;
+        cloudBusy = true;
+        cloudBusyText = "Enviando para a nuvem…";
+        StartTrayAnim();
+        RepaintAll();
+        ThreadPool.QueueUserWorkItem(delegate(object o)
+        {
+            try
+            {
+                CloudInfo remote = CloudReadInfo();
+                string toSend = ini;
+                bool merged = false;
+                if (remote != null && remote.Stamp != last)
+                {
+                    byte[] rb = CloudGet("ClipAtalho.ini");
+                    if (rb != null)
+                    {
+                        toSend = MergeIni(ini, Encoding.UTF8.GetString(rb).TrimStart((char)0xFEFF), baseIni, true);
+                        merged = true;
+                        DownloadMissingImages(toSend, imgDir);
+                    }
+                }
+                bgInfo = UploadAll(toSend, imgDir);
+                bgResult = toSend;
+                bgMerged = merged;
+                bgErr = null;
+            }
+            catch (Exception e) { bgErr = e.Message; }
+            PostMessageW(hwndMain, WM_CLOUDBGDONE, IntPtr.Zero, IntPtr.Zero);
+        });
+    }
+
+    static void OnCloudBgDone()
+    {
+        cloudBusy = false;
+        cloudBusyText = "";
+        if (bgErr != null)
+        {
+            Log("Nuvem: envio automático falhou: " + bgErr);
+            TrayDone(false);
+            RepaintAll();
+            SetTimer(hwndMain, (IntPtr)TIMER_CLOUDASK, 60000, IntPtr.Zero); // tenta de novo em 1 minuto
+            return;
+        }
+        string cur = ReadIni() ?? "";
+        bool changedMeanwhile = IniSig(cur) != IniSig(bgSnapshot);
+        if (bgMerged && IniSig(bgResult) != IniSig(bgSnapshot))
+        {
+            // o que veio do outro computador entra aqui; o que foi editado enquanto enviava é mantido
+            string apply = changedMeanwhile ? MergeIni(cur, bgResult, bgSnapshot, true) : bgResult;
+            pendMerge = apply;
+            pendMergeSnap = cur;
+            ApplyPendingMerge();
+        }
+        FinishSync(bgResult, bgInfo, bgMerged ? "enviado automaticamente (mesclado com outro computador)" : "enviado automaticamente");
+        if (changedMeanwhile) MarkCloudDirty(); // o que mudou durante o envio vai na próxima rodada
+        TrayDone(true);
+    }
+
+    // Só recarrega quando não há edição aberta (senão perderia o que está sendo digitado).
+    static void ApplyPendingMerge()
+    {
+        if (pendMerge == null || editDirty || expDirty || hDlg != IntPtr.Zero) return;
+        string cur = ReadIni() ?? "";
+        string apply = IniSig(cur) == IniSig(pendMergeSnap) ? pendMerge : MergeIni(cur, pendMerge, pendMergeSnap, true);
+        pendMerge = null;
+        pendMergeSnap = null;
+        if (IniSig(apply) != IniSig(cur)) ApplyIni(apply);
+    }
+
+    // ---- mesclagem: compara este computador, a nuvem e a última sincronização (base) item por item
+    // - existe só de um lado e não existia na base: é novo -> entra;
+    // - existia na base e sumiu de um lado (sem ter sido editado do outro): foi excluído -> continua excluído;
+    // - editado dos dois lados de jeitos diferentes: fica o daqui e o de lá entra como cópia (nada se perde).
+    class IniEntry { public string Key, Block; public bool Pinned; }
+
+    static List<KeyValuePair<string, List<string>>> IniSections(string text)
+    {
+        List<KeyValuePair<string, List<string>>> res = new List<KeyValuePair<string, List<string>>>();
+        List<string> cur = new List<string>();
+        res.Add(new KeyValuePair<string, List<string>>("", cur));
+        foreach (string raw in (text ?? "").Replace("\r\n", "\n").Split('\n'))
+        {
+            string line = raw.TrimStart((char)0xFEFF);
+            string t = line.Trim();
+            if (t.StartsWith("[") && t.EndsWith("]"))
+            {
+                cur = new List<string>();
+                res.Add(new KeyValuePair<string, List<string>>(t.Substring(1, t.Length - 2).Trim().ToLowerInvariant(), cur));
+                continue;
+            }
+            cur.Add(line);
+        }
+        return res;
+    }
+
+    static List<string> SectionLines(List<KeyValuePair<string, List<string>>> secs, string name)
+    {
+        foreach (KeyValuePair<string, List<string>> kv in secs) if (kv.Key == name) return kv.Value;
+        return null;
+    }
+
+    static List<IniEntry> AbbrEntries(List<string> lines)
+    {
+        List<IniEntry> r = new List<IniEntry>();
+        if (lines == null) return r;
+        foreach (string line in lines)
+        {
+            string t = line.Trim();
+            if (t.Length == 0 || t[0] == ';') continue;
+            int eq = line.IndexOf('=');
+            if (eq < 1) continue;
+            string k = line.Substring(0, eq).Trim();
+            if (k.StartsWith("-")) k = k.Substring(1).Trim();
+            IniEntry e = new IniEntry();
+            e.Key = k.ToLowerInvariant();
+            e.Block = line;
+            r.Add(e);
+        }
+        return r;
+    }
+
+    static List<IniEntry> ClipEntries(List<string> lines)
+    {
+        List<IniEntry> r = new List<IniEntry>();
+        if (lines == null) return r;
+        IniEntry last = null;
+        int vagas = 0;
+        foreach (string line in lines)
+        {
+            string t = line.Trim();
+            if (t.Length == 0 || t[0] == ';') continue;
+            int eq = line.IndexOf('=');
+            if (eq < 1) continue;
+            string key = line.Substring(0, eq).Trim().ToLowerInvariant(), val = line.Substring(eq + 1);
+            if ((key == "html" || key == "rtf") && last != null && last.Key.StartsWith("t:")) { last.Block += "\r\n" + line; continue; }
+            IniEntry e = new IniEntry();
+            e.Block = line;
+            if (key == "vaga") e.Key = "vaga#" + (vagas++);
+            else if (key == "fixo_img" || key == "normal_img") { e.Key = "i:" + val.Trim().ToLowerInvariant(); e.Pinned = key == "fixo_img"; }
+            else if (key == "fixo" || key == "normal") { e.Key = "t:" + val; e.Pinned = key == "fixo"; }
+            else continue;
+            r.Add(e);
+            last = e;
+        }
+        return r;
+    }
+
+    static Dictionary<string, IniEntry> EntryDict(List<IniEntry> list)
+    {
+        Dictionary<string, IniEntry> d = new Dictionary<string, IniEntry>();
+        if (list != null) foreach (IniEntry e in list) if (!d.ContainsKey(e.Key)) d[e.Key] = e;
+        return d;
+    }
+
+    static IniEntry RenameAbbr(IniEntry r, HashSet<string> used)
+    {
+        int eq = r.Block.IndexOf('=');
+        if (eq < 1) return null;
+        bool loose = r.Block.Substring(0, eq).Trim().StartsWith("-");
+        string val = r.Block.Substring(eq + 1);
+        for (int n = 2; n < 1000; n++)
+        {
+            string nk = r.Key + n;
+            if (nk.Length > 32 || used.Contains(nk)) continue;
+            used.Add(nk);
+            IniEntry c = new IniEntry();
+            c.Key = nk;
+            c.Block = (loose ? "-" : "") + nk + "=" + val;
+            return c;
+        }
+        return null;
+    }
+
+    static List<IniEntry> Merge3(List<IniEntry> L, List<IniEntry> R, List<IniEntry> B, bool abbr, bool copies)
+    {
+        Dictionary<string, IniEntry> Ld = EntryDict(L), Rd = EntryDict(R), Bd = B == null ? null : EntryDict(B);
+        HashSet<string> used = new HashSet<string>(Ld.Keys);
+        foreach (string k in Rd.Keys) used.Add(k);
+        List<IniEntry> res = new List<IniEntry>();
+        foreach (IniEntry e in L)
+        {
+            if (e.Key.StartsWith("vaga#")) { res.Add(e); continue; }
+            IniEntry r, b = null;
+            bool inR = Rd.TryGetValue(e.Key, out r), inB = Bd != null && Bd.TryGetValue(e.Key, out b);
+            if (inR)
+            {
+                if (r.Block == e.Block) res.Add(e);
+                else if (inB && b.Block == e.Block) res.Add(r);      // só mudou lá
+                else if (inB && b.Block == r.Block) res.Add(e);      // só mudou aqui
+                else if (!abbr) res.Add(r.Pinned && !e.Pinned ? r : e); // clip igual com fixação/formatação diferente: prefere o fixado
+                else
+                {
+                    res.Add(e);
+                    if (copies) { IniEntry c = RenameAbbr(r, used); if (c != null) res.Add(c); }
+                }
+            }
+            else
+            {
+                if (inB && b.Block == e.Block) continue; // excluído no outro computador
+                res.Add(e);
+            }
+        }
+        foreach (IniEntry r in R)
+        {
+            if (r.Key.StartsWith("vaga#") || Ld.ContainsKey(r.Key)) continue;
+            IniEntry b = null;
+            if (Bd != null && Bd.TryGetValue(r.Key, out b) && b.Block == r.Block) continue; // excluído aqui
+            res.Add(r);
+        }
+        return res;
+    }
+
+    static string MergeIni(string local, string remote, string baseIni, bool copies)
+    {
+        List<KeyValuePair<string, List<string>>> Ls = IniSections(local), Rs = IniSections(remote), Bs = baseIni == null ? null : IniSections(baseIni);
+        List<IniEntry> abbr = Merge3(AbbrEntries(SectionLines(Ls, "atalhos")), AbbrEntries(SectionLines(Rs, "atalhos")),
+            Bs == null ? null : AbbrEntries(SectionLines(Bs, "atalhos")), true, copies);
+        List<IniEntry> cl = Merge3(ClipEntries(SectionLines(Ls, "clips")), ClipEntries(SectionLines(Rs, "clips")),
+            Bs == null ? null : ClipEntries(SectionLines(Bs, "clips")), false, false);
+        int count = 0;
+        foreach (IniEntry e in cl) if (!e.Key.StartsWith("vaga#")) count++;
+        for (int i = cl.Count - 1; i >= 0 && count > MaxClips; i--) // respeita o limite: sai primeiro o que não é fixado
+            if (!cl[i].Pinned && !cl[i].Key.StartsWith("vaga#")) { cl.RemoveAt(i); count--; }
+        List<IniEntry> dates = AbbrEntries(SectionLines(Ls, "atalhos_criacao"));
+        Dictionary<string, IniEntry> dl = EntryDict(dates);
+        foreach (IniEntry e in AbbrEntries(SectionLines(Rs, "atalhos_criacao"))) if (!dl.ContainsKey(e.Key)) { dates.Add(e); dl[e.Key] = e; }
+
+        Dictionary<string, List<IniEntry>> repl = new Dictionary<string, List<IniEntry>>();
+        repl["atalhos"] = abbr;
+        repl["clips"] = cl;
+        repl["atalhos_criacao"] = dates;
+        StringBuilder sb = new StringBuilder();
+        List<string> done = new List<string>();
+        foreach (KeyValuePair<string, List<string>> sec in Ls)
+        {
+            if (sec.Key.Length > 0) sb.Append("[").Append(sec.Key).Append("]\r\n");
+            List<IniEntry> ents;
+            if (repl.TryGetValue(sec.Key, out ents))
+            {
+                done.Add(sec.Key);
+                foreach (string line in sec.Value) { string t = line.Trim(); if (t.Length > 0 && t[0] != ';') break; if (t.Length > 0) sb.Append(line).Append("\r\n"); }
+                foreach (IniEntry e in ents) sb.Append(e.Block).Append("\r\n");
+                sb.Append("\r\n");
+            }
+            else foreach (string line in sec.Value) sb.Append(line).Append("\r\n");
+        }
+        foreach (string name in new string[] { "atalhos", "atalhos_criacao", "clips" })
+        {
+            if (done.Contains(name) || repl[name].Count == 0) continue;
+            sb.Append("\r\n[").Append(name).Append("]\r\n");
+            foreach (IniEntry e in repl[name]) sb.Append(e.Block).Append("\r\n");
+        }
+        return sb.ToString().TrimEnd('\r', '\n', ' ') + "\r\n";
+    }
+
+    // "Assinatura" do conteúdo (atalhos e clips): para saber se algo mudou de verdade, ignorando espaços e comentários.
+    static string IniSig(string ini)
+    {
+        List<KeyValuePair<string, List<string>>> secs = IniSections(ini ?? "");
+        StringBuilder sb = new StringBuilder();
+        foreach (IniEntry e in AbbrEntries(SectionLines(secs, "atalhos"))) sb.Append(e.Block).Append('\n');
+        sb.Append("\u0001");
+        foreach (IniEntry e in ClipEntries(SectionLines(secs, "clips"))) sb.Append(e.Block).Append('\n');
+        return sb.ToString();
     }
 
     // Depois de cada alteração feita à mão: pergunta (ou envia sozinho) alguns segundos depois da última.
@@ -5592,7 +6333,7 @@ atalhos_data2=sim
     {
         if (cloudQuiet || cloudApplying || !CloudReady() || cloudMode == 2 || hwndMain == IntPtr.Zero) return;
         cloudDirty = true;
-        SetTimer(hwndMain, (IntPtr)TIMER_CLOUDASK, 6000, IntPtr.Zero);
+        SetTimer(hwndMain, (IntPtr)TIMER_CLOUDASK, cloudMode == 1 ? 12000u : 6000u, IntPtr.Zero); // automático: espera parar de mexer
     }
 
     static void OnCloudAskTimer()
@@ -5610,8 +6351,8 @@ atalhos_data2=sim
             SetTimer(hwndMain, (IntPtr)TIMER_CLOUDASK, 1500, IntPtr.Zero);
             return;
         }
+        if (cloudMode == 1) { CloudSyncBg(); return; } // em segundo plano: nada trava
         if (cloudBusy || hDlg != IntPtr.Zero) { SetTimer(hwndMain, (IntPtr)TIMER_CLOUDASK, 5000, IntPtr.Zero); return; }
-        if (cloudMode == 1) { CloudUpload(false, true); return; }
         dlgEscResult = 2;
         dlgPrimary = 1;
         int r = AskDialog("Enviar para a nuvem?", "Você fez alterações. Enviar agora para a nuvem (" + (cloudProv == 1 ? "OneDrive" : "pasta") +
@@ -5646,16 +6387,19 @@ atalhos_data2=sim
         cloudInfo = i;
         RepaintAll();
         if (i.Stamp == cloudLastSync || i.Machine == Environment.MachineName || cloudAskPending) return;
+        if (cloudMode == 1) { CloudSyncBg(); return; } // envio automático ligado: mescla sozinho, sem perguntar
         cloudAskPending = true;
         AskLater(delegate // pergunta quando a pessoa estiver na janela do ClipAtalho (o ícone pisca até lá)
         {
             cloudAskPending = false;
             if (i.Stamp == cloudLastSync) return;
-            dlgEscResult = 2;
+            dlgEscResult = 3;
             dlgPrimary = 1;
-            if (AskDialog("Versão mais nova na nuvem", "Há na nuvem uma versão mais nova dos seus clips e atalhos, " + InfoText(i) +
-                ".\nBaixar agora? (os dados deste computador serão substituídos; uma cópia fica guardada)", "Baixar", "Agora não", null) == 1)
-                CloudDownload(true);
+            dlgRedNote = "\"Substituir\" troca os dados deste computador pelos da nuvem (uma cópia dos atuais fica guardada).";
+            int ra = AskDialog("Versão mais nova na nuvem", "Há na nuvem uma versão mais nova dos seus clips e atalhos, " + InfoText(i) +
+                ".\n\"Mesclar\" junta com o deste computador, sem perder nada.", "Mesclar", "Substituir pelo da nuvem", "Agora não");
+            dlgRedNote = "";
+            if (ra == 1 || ra == 2) CloudDownload(ra);
             else { cloudLastSync = i.Stamp; SaveLocal(); } // não pergunta de novo por esta mesma versão
         });
     }
@@ -5837,8 +6581,10 @@ atalhos_data2=sim
         dlgPrimary = 1;
         if (remote != null && remote.Stamp != cloudLastSync)
         {
-            if (AskDialog("Backup encontrado na nuvem", "Já existe um backup na nuvem, " + InfoText(remote) + ".\nBaixar para este computador agora?",
-                "Baixar", "Agora não", null) == 1) CloudDownload(true);
+            dlgEscResult = 3;
+            int ra = AskDialog("Backup encontrado na nuvem", "Já existe um backup na nuvem, " + InfoText(remote) +
+                ".\n\"Mesclar\" junta com o deste computador, sem perder nada.", "Mesclar", "Substituir pelo da nuvem", "Agora não");
+            if (ra == 1 || ra == 2) CloudDownload(ra);
         }
         else if (remote == null)
         {
@@ -6133,6 +6879,7 @@ atalhos_data2=sim
         expDirty = dirty;
         InvalidateRect(hwndMgr, IntPtr.Zero, true);
         InvalidateRect(GetDlgItem(hwndMgr, IDC_XSAVE), IntPtr.Zero, true);
+        InvalidateRect(GetDlgItem(hwndMgr, IDC_XSAVENEW), IntPtr.Zero, true);
     }
 
     static void LoadX()
@@ -6281,6 +7028,14 @@ atalhos_data2=sim
             return false;
         }
         string orig = asNew ? null : xSel;
+        if (asNew && cfgAbbr.ContainsKey(abbr))
+        {
+            for (int n = 2; n < 1000; n++)
+            {
+                string cand = abbr + n;
+                if (cand.Length <= 32 && !cfgAbbr.ContainsKey(cand)) { abbr = cand; SetWindowTextW(hXAbbr, abbr); break; }
+            }
+        }
         if (abbr != orig && cfgAbbr.ContainsKey(abbr))
         {
             Info((asNew && abbr == xSel)
@@ -6685,6 +7440,7 @@ atalhos_data2=sim
             case IDC_CLEAR: return "Limpar não fixados";
             case IDC_DELPIN: return "Apagar Fixados";
             case IDC_SAVE: return "Salvar";
+            case IDC_SAVENEW: return "Salvar Novo";
             case IDC_NEW: return "+  Novo";
             case IDC_PIN: return (mgrSel != null && mgrSel.Pinned) ? "☆  Soltar" : "★  Fixar";
             case IDC_DEL: return "Excluir";
@@ -6703,14 +7459,17 @@ atalhos_data2=sim
             case IDC_THEME: return "Claro";
             case IDC_THEME + 1: return "Escuro";
             case IDC_XDEL: return "Excluir";
-            case IDC_T_STARTUP: return packaged ? "Iniciar junto com o Windows (no app da loja: ajuste em Configurações do Windows › Aplicativos › Inicialização)" : "Iniciar junto com o Windows";
+            case IDC_T_STARTUP: return packaged ? "Iniciar com o Windows (loja: ajuste no Windows)" : "Iniciar junto com o Windows";
+            case IDC_T_ADMIN: return "Abrir como administrador  ⓘ";
+            case IDC_T_TEXTONLY: return "Colar só o texto (tirar figura)  ⓘ";
             case IDC_T_SAVEALL: return "Guardar também os clips não fixados (se desligado, só os fixados ficam salvos ao fechar)";
-            case IDC_T_IMAGES: return "Clips de imagem: guardar também imagens copiadas (prints, figuras), como no Win+V";
+            case IDC_T_IMAGES: return "Guardar imagens copiadas (prints, figuras)";
             case IDC_T_EXPAND: return "Expansão de texto: digitar um atalho e apertar Tab (cadastre na tela Atalhos por Expansão)";
             case IDC_SEG: return "Geral";
             case IDC_SEG + 1: return "Dados e backup";
             case IDC_SEG3: return "Nuvem";
             case IDC_T_DATEKEY: return "Tecla de atalho que cola a data de hoje:";
+            case IDC_CLOUDVERS: return "Versões anteriores na nuvem…";
             case IDC_DATEHOT: return HotkeyLabel(dateMods, dateVk) + (cfgDateKey && !registeredOK[30] ? "  (em uso por outro programa!)" : "") + "   ·   trocar…";
             case IDC_MOUSEBTN: return "Botões do mouse: " + (mouseAct.Count == 0 ? "desligados" : mouseAct.Count == 1 ? "1 ação" : mouseAct.Count + " ações") + "   ▼";
             case IDC_DATEFMT: return DateStr(DateTime.Now) + "   ▼";
@@ -6749,7 +7508,7 @@ atalhos_data2=sim
     {
         int id = (int)d.CtlID;
         bool down = (d.itemState & 0x1) != 0, focus = (d.itemState & 0x10) != 0;
-        bool onCard = id >= IDC_MOD && id != IDC_DELPIN && id != IDC_XSAVENEW && id != IDC_XSORT && id != IDC_CLOSE && id != IDC_SEG && id != IDC_SEG + 1 && id != IDC_SEG3 && id != IDC_HOURFMT && !(id >= IDC_XSAVE && id <= IDC_XCLEAR); // dentro de cartão ou sobre o fundo
+        bool onCard = id >= IDC_MOD && id != IDC_DELPIN && id != IDC_XSAVENEW && id != IDC_SAVENEW && id != IDC_XSORT && id != IDC_CLOSE && id != IDC_SEG && id != IDC_SEG + 1 && id != IDC_SEG3 && id != IDC_HOURFMT && !(id >= IDC_XSAVE && id <= IDC_XCLEAR); // dentro de cartão ou sobre o fundo
         FillRect(d.hDC, ref d.rcItem, onCard ? hWhiteBrush : hBgBrush);
         int l = d.rcItem.Left, t = d.rcItem.Top, w = d.rcItem.Right - d.rcItem.Left, h = d.rcItem.Bottom - d.rcItem.Top;
 
@@ -6780,9 +7539,9 @@ atalhos_data2=sim
             DrawTextAt(d.hDC, up ? "Enviar para a nuvem" : "Baixar da nuvem", hUiBold, tc, ix + Px(56), t, l + w - Px(10), t + h, 0x24);
             return;
         }
-        if ((id >= IDC_T_STARTUP && id <= IDC_T_EXPAND) || id == IDC_T_IMAGES || id == IDC_T_DATADIR || id == IDC_T_DATEKEY || id == IDC_T_CLOUDCHECK || id == IDC_T_CLOUDLIVE || id == IDC_T_CLOUDLIVEIMG) // chave liga/desliga
+        if ((id >= IDC_T_STARTUP && id <= IDC_T_EXPAND) || id == IDC_T_IMAGES || id == IDC_T_TEXTONLY || id == IDC_T_ADMIN || id == IDC_T_DATADIR || id == IDC_T_DATEKEY || id == IDC_T_CLOUDCHECK || id == IDC_T_CLOUDLIVE || id == IDC_T_CLOUDLIVEIMG) // chave liga/desliga
         {
-            bool on = id == IDC_T_CLOUDLIVE ? cloudLive : id == IDC_T_CLOUDLIVEIMG ? cloudLiveImg : id == IDC_T_DATEKEY ? cfgDateKey : id == IDC_T_CLOUDCHECK ? cloudCheck : id == IDC_T_DATADIR ? dataOn : id == IDC_T_IMAGES ? cfgImages : (id == IDC_T_STARTUP ? startupOn : (id == IDC_T_SAVEALL ? cfgSaveAll : cfgExpand));
+            bool on = id == IDC_T_TEXTONLY ? cfgTextOnly : id == IDC_T_ADMIN ? adminMode : id == IDC_T_CLOUDLIVE ? cloudLive : id == IDC_T_CLOUDLIVEIMG ? cloudLiveImg : id == IDC_T_DATEKEY ? cfgDateKey : id == IDC_T_CLOUDCHECK ? cloudCheck : id == IDC_T_DATADIR ? dataOn : id == IDC_T_IMAGES ? cfgImages : (id == IDC_T_STARTUP ? startupOn : (id == IDC_T_SAVEALL ? cfgSaveAll : cfgExpand));
             int tw = Px(40), th = Px(22), ty = t + (h - th) / 2, knob = Px(16);
             RoundRect(d.hDC, l, ty, tw, th, th / 2, on ? A_ACCENT : A_BTNBORDER, 0);
             RoundRect(d.hDC, on ? l + tw - knob - Px(3) : l + Px(3), ty + (th - knob) / 2, knob, knob, knob / 2, 0xFFFFFFFF, 0);
@@ -6817,10 +7576,11 @@ atalhos_data2=sim
 
         uint fill = down ? A_DOWN : A_WHITE, border = focus ? A_ACCENT : A_BTNBORDER, color = C_TEXT;
         bool primary = false;
-        if (id == IDC_SAVE || id == IDC_XSAVE)
+        if (id == IDC_SAVE || id == IDC_XSAVE || id == IDC_SAVENEW || id == IDC_XSAVENEW) // "Salvar Novo" é o destacado: não substitui nada
         {
-            if (id == IDC_SAVE ? editDirty : expDirty) primary = true;
-            else { fill = A_DOWN; border = 0; color = C_GRAY; }
+            bool dirty = (id == IDC_SAVE || id == IDC_SAVENEW) ? editDirty : expDirty;
+            if (!dirty) { fill = A_DOWN; border = 0; color = C_GRAY; }
+            else if (id == IDC_SAVENEW || id == IDC_XSAVENEW) primary = true;
         }
         else if (id == IDC_DLG + dlgPrimary) primary = true;
         else if (id >= IDC_NAV && id < IDC_NAV + 4)
@@ -7335,14 +8095,13 @@ atalhos_data2=sim
         switch (id)
         {
             // ---------------- página Clips
-            case IDC_SAVE:
+            case IDC_SAVE: // grava por cima (sem perguntar: o "Salvar Novo" é o botão seguro)
                 if (!editDirty) return;
-                if (editClip != null && !editClip.IsImage && editClip.Text.Length > 0)
-                {
-                    int r = AskSave("clip");
-                    if (r == 1) SaveEdit();
-                    else if (r == 2) SaveEditAsNew();
-                }
+                SaveEdit();
+                return;
+            case IDC_SAVENEW: // grava como clip novo; o original fica como estava
+                if (!editDirty) return;
+                if (editClip != null && !editClip.IsImage && editClip.Text.Length > 0) SaveEditAsNew();
                 else SaveEdit();
                 return;
             case IDC_CLEAR:
@@ -7404,18 +8163,13 @@ atalhos_data2=sim
                 break;
 
             // ---------------- página Atalhos por Expansão
-            case IDC_XSAVE:
+            case IDC_XSAVE: // grava por cima
                 if (!expDirty) return;
-                if (xSel != null)
-                {
-                    int r = AskSave("atalho");
-                    if (r == 1) SaveX(false);
-                    else if (r == 2) SaveX(true);
-                }
-                else SaveX(false);
+                SaveX(false);
                 return;
-            case IDC_XSAVENEW:
-                SaveX(true);
+            case IDC_XSAVENEW: // grava como atalho novo; o original fica como estava
+                if (!expDirty && xSel != null) return;
+                SaveX(xSel != null);
                 return;
             case IDC_XSORT:
                 XSortMenu();
@@ -7503,6 +8257,14 @@ atalhos_data2=sim
                 LoadConfig();
                 RepaintAll();
                 return;
+            case IDC_T_TEXTONLY:
+                SetIniValue("geral", "so_texto", cfgTextOnly ? "nao" : "sim");
+                LoadConfig();
+                RepaintAll();
+                return;
+            case IDC_T_ADMIN:
+                ToggleAdmin();
+                return;
             case IDC_T_EXPAND:
                 SetIniValue("geral", "expansao", cfgExpand ? "nao" : "sim");
                 LoadConfig();
@@ -7532,7 +8294,8 @@ atalhos_data2=sim
             case IDC_CLOUDPROV: CloudProvMenu(); return;
             case IDC_CLOUDCONN: CloudConnButton(); return;
             case IDC_CLOUDUP: CloudUpload(true, false); return;
-            case IDC_CLOUDDOWN: CloudDownload(false); return;
+            case IDC_CLOUDDOWN: CloudDownload(0); return;
+            case IDC_CLOUDVERS: CloudVersions(); return;
             case IDC_CLOUDMODE: CloudModeMenu(); return;
             case IDC_T_CLOUDCHECK:
                 cloudCheck = !cloudCheck;
@@ -7722,13 +8485,14 @@ atalhos_data2=sim
         popTrashArmed = null;
         popDrag = false;
         if (popScale.Length != popLines.Count) popScale = new float[popLines.Count];
-        if (hMouseHook == IntPtr.Zero) // normalmente já está ligado desde o início
-            hMouseHook = SetWindowsHookExW(14, Marshal.GetFunctionPointerForDelegate(mouseProcRef), hInst, 0);
+        if (hMouseHook == IntPtr.Zero && hookTid != 0) PostThreadMessageW(hookTid, WM_REHOOK, IntPtr.Zero, IntPtr.Zero);
         int w = Px(540), h = PopupHeight();
         int x, y;
         PlaceNearText(w, h, out x, out y);
         FadeWindow(hwndPopup, true);
         SetWindowPos(hwndPopup, (IntPtr)(-1), x, y, w, h, 0x10 | 0x40); // topo, sem ativar
+        SetWindowPos(hwndPopup, (IntPtr)(-1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10 | 0x40); // de novo: passa na frente de outras janelas "sempre no topo"
+        SetTimer(hwndMain, (IntPtr)TIMER_TOPMOST, 200, IntPtr.Zero);
         RoundWindow(hwndPopup, w, h);
         PlaceShade(hwndPopup);
         InvalidateRect(hwndPopup, IntPtr.Zero, true);
@@ -7971,8 +8735,7 @@ atalhos_data2=sim
             PostMessageW(hwndMain, WM_HIDEPOPUP, IntPtr.Zero, IntPtr.Zero);
             if (n >= 0 && !ctrlAltWin)
             {
-                if (n < clips.Count) PasteClip(clips[n], shift);
-                else PostMessageW(hwndMain, WM_POPFILTER, (IntPtr)(-9), IntPtr.Zero); // aviso de posição vazia
+                PostMessageW(hwndMain, WM_HOOKPASTE, (IntPtr)n, (IntPtr)(shift ? 1 : 0)); // cola pela janela principal
                 return true;
             }
             return false;
@@ -7992,7 +8755,8 @@ atalhos_data2=sim
                 string text = AbbrText(abbr);
                 if (text != null)
                 {
-                    StartPaste(text, abbr.Length);
+                    hookExpandAbbr = abbr;
+                    PostMessageW(hwndMain, WM_HOOKEXPAND, IntPtr.Zero, IntPtr.Zero); // cola pela janela principal
                     return true;
                 }
                 return false;
@@ -8041,7 +8805,9 @@ atalhos_data2=sim
         if (typed.Length > 64) typed.Remove(0, typed.Length - 64);
         // O atalho vale quando o que foi digitado TERMINA com ele (apagar e redigitar a última letra também funciona)
         string t = typed.ToString(), best = null;
-        foreach (string k in cfgAbbr.Keys)
+        string[] keys;
+        try { keys = new List<string>(cfgAbbr.Keys).ToArray(); } catch { return false; } // a lista pode estar sendo recarregada
+        foreach (string k in keys)
         {
             if (k.Length > t.Length || (best != null && k.Length <= best.Length) || !t.EndsWith(k, StringComparison.Ordinal)) continue;
             int at = t.Length - k.Length;
@@ -8095,6 +8861,7 @@ atalhos_data2=sim
 
     static IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam)
     {
+        lastHookTick = Environment.TickCount;
         try
         {
             uint msg = (uint)wParam.ToInt64();
@@ -8160,23 +8927,30 @@ atalhos_data2=sim
                             if (File.Exists(iniPath) && File.GetLastWriteTimeUtc(iniPath) != iniMod) OnIniChangedOutside();
                             RunAutoDelete();
                             AutoDailyBackup();
+                            ApplyPendingMerge();
                             break;
                         case TIMER_LIVE: OnLiveTimer(); break;
                         case TIMER_BUSY: OnBusyTimer(); break;
                         case TIMER_ASKS: RunAsks(); break;
+                        case TIMER_TRAY: OnTrayTimer(); break;
+                        case TIMER_TOPMOST:
+                            KillTimer(hwndMain, (IntPtr)TIMER_TOPMOST);
+                            if (popMode != MODE_NONE && IsWindowVisible(hwndPopup)) SetWindowPos(hwndPopup, (IntPtr)(-1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10 | 0x40);
+                            break;
                     }
                     return IntPtr.Zero;
                 case WM_SHOWPOPUP:
                     string abbr = matchAbbr;
                     if (abbr == null) return IntPtr.Zero;
                     string text = AbbrText(abbr);
-                    if (text != null) ShowSuggest(abbr, text);
+                    if (text != null) { ShowSuggest(abbr, text); Log("Expansão: sugestão mostrada (atalho de " + abbr.Length + " letras)"); }
                     return IntPtr.Zero;
                 case WM_HIDEPOPUP:
                     HidePopup();
                     return IntPtr.Zero;
                 case WM_TRAY:
                     uint ev = (uint)(lParam.ToInt64() & 0xFFFF);
+                    if ((ev == WM_LBUTTONUP || ev == WM_RBUTTONUP) && trayState == 3) TrayNormal(); // aviso de erro visto
                     if (ev == WM_LBUTTONUP) OpenManager(0);
                     else if (ev == WM_RBUTTONUP) TrayMenu();
                     return IntPtr.Zero;
@@ -8219,6 +8993,24 @@ atalhos_data2=sim
                     return IntPtr.Zero;
                 case WM_HOTCAP:
                     if (hDlg != IntPtr.Zero && hotCapture) dlgResult = wParam.ToInt32() == -1 ? 2 : 100;
+                    return IntPtr.Zero;
+                case WM_HOOKPASTE:
+                {
+                    int hn = wParam.ToInt32();
+                    if (hn >= 0 && hn < clips.Count) PasteClip(clips[hn], lParam != IntPtr.Zero);
+                    else ShowNotice("Você ainda não salvou nada nesta posição.");
+                    return IntPtr.Zero;
+                }
+                case WM_HOOKEXPAND:
+                {
+                    string ha = hookExpandAbbr;
+                    hookExpandAbbr = null;
+                    string ht = ha == null ? null : AbbrText(ha);
+                    if (ht != null) StartPaste(ht, ha.Length);
+                    return IntPtr.Zero;
+                }
+                case WM_CLOUDBGDONE:
+                    OnCloudBgDone();
                     return IntPtr.Zero;
                 case WM_MOUSEACT:
                 {
@@ -8639,7 +9431,14 @@ atalhos_data2=sim
     static void Main()
     {
         bool created;
+        bool relaunched = Array.IndexOf(Environment.GetCommandLineArgs(), "--elevado") > 0;
         Mutex mutex = new Mutex(true, "ClipAtalho_InstanciaUnica", out created);
+        if (!created && relaunched) // a cópia anterior está fechando para esta abrir como administrador
+        {
+            try { created = mutex.WaitOne(10000); }
+            catch (AbandonedMutexException) { created = true; }
+        }
+        appMutex = mutex;
         if (!created)
         {
             MessageBoxW(IntPtr.Zero, "O ClipAtalho já está em execução (veja o ícone perto do relógio).", "ClipAtalho", 0x40);
@@ -8660,6 +9459,11 @@ atalhos_data2=sim
         logPath = Path.Combine(exeDir, "ClipAtalho.log");
         try { if (File.Exists(logPath) && new FileInfo(logPath).Length > 200000) File.Delete(logPath); } catch { }
         Log("---- ClipAtalho iniciado (" + VERSION + ", " + (IntPtr.Size * 8) + " bits) ----");
+        if (adminMode && !packaged && !relaunched && !IsElevated())
+        {
+            if (StartElevated()) { try { mutex.ReleaseMutex(); } catch { } return; }
+            Log("Modo administrador: o Windows não confirmou; abrindo no modo normal");
+        }
 
         SetProcessDPIAware();
         hInst = GetModuleHandleW(null);
@@ -8739,10 +9543,15 @@ atalhos_data2=sim
         AddClipboardFormatListener(hwndMain);
         SetTimer(hwndMain, (IntPtr)TIMER_CONFIG, 2000, IntPtr.Zero);
 
-        hHook = SetWindowsHookExW(13, Marshal.GetFunctionPointerForDelegate(hookProcRef), hInst, 0);
         mouseProcRef = MouseProc; // gancho do mouse: cliques zeram a digitação da expansão e os botões extras podem ter ações
-        hMouseHook = SetWindowsHookExW(14, Marshal.GetFunctionPointerForDelegate(mouseProcRef), hInst, 0);
-        Log("Gancho de teclado: " + (hHook == IntPtr.Zero ? "FALHOU (erro " + Marshal.GetLastWin32Error() + ")" : "ativo"));
+        // Os ganchos de teclado e mouse ficam numa linha de execução só deles: a janela pode estar ocupada (nuvem, caixas de mensagem,
+        // gravação de arquivos) que a expansão continua funcionando. Um vigia religa os ganchos se o Windows os desligar.
+        hookThread = new Thread(HookThreadMain);
+        hookThread.IsBackground = true;
+        hookThread.Priority = ThreadPriority.AboveNormal;
+        hookThread.Start();
+        hookReady.WaitOne(3000);
+        Log("Gancho de teclado: " + (hHook == IntPtr.Zero ? "FALHOU (erro " + hookErr + ")" : "ativo (linha própria, com vigia)") + (IsElevated() ? " · como administrador" : ""));
         if (hHook == IntPtr.Zero)
             Balloon("ClipAtalho", "Não foi possível ativar a expansão de texto; os atalhos de colagem continuam funcionando.");
         else
@@ -8760,6 +9569,16 @@ atalhos_data2=sim
                 if (k == 0x1B && (msg.hwnd == hSearch || msg.hwnd == hXSearch)) { ClearSearch(); continue; } // Esc limpa a busca
                 if (k == 0x0D && (msg.hwnd == hSearch || msg.hwnd == hXSearch)) { SetFocus(msg.hwnd == hSearch ? hList : hXList); continue; }
             }
+            if (msg.message == 0x0100 && hwndMgr != IntPtr.Zero && hDlg == IntPtr.Zero && hMenuWnd == IntPtr.Zero && KeyDown(0x11) && !KeyDown(0x12) &&
+                (msg.wParam.ToInt32() == 'A' || msg.wParam.ToInt32() == 'S') && (msg.hwnd == hwndMgr || GetParent(msg.hwnd) == hwndMgr))
+            {
+                IntPtr fa = GetFocus();
+                if (msg.wParam.ToInt32() == 'A') // Ctrl+A: seleciona todo o texto do campo
+                {
+                    if (fa == hEdit || fa == hXText || fa == hXAbbr || fa == hSearch || fa == hXSearch) { SendMessageW(fa, 0x00B1, IntPtr.Zero, (IntPtr)(-1)); continue; }
+                }
+                else if (page == 0 || page == 1) { ManagerCommand(page == 0 ? IDC_SAVENEW : IDC_XSAVENEW, 0); continue; } // Ctrl+S = Salvar Novo
+            }
             if (msg.message == 0x0100 && hwndMgr != IntPtr.Zero && hDlg == IntPtr.Zero && hMenuWnd == IntPtr.Zero && KeyDown(0x11) &&
                 (msg.wParam.ToInt32() == 'Z' || msg.wParam.ToInt32() == 'Y') && (msg.hwnd == hwndMgr || GetParent(msg.hwnd) == hwndMgr))
             {
@@ -8774,8 +9593,7 @@ atalhos_data2=sim
             TranslateMessage(ref msg);
             DispatchMessageW(ref msg);
         }
-        if (hHook != IntPtr.Zero) UnhookWindowsHookEx(hHook);
-        if (hMouseHook != IntPtr.Zero) UnhookWindowsHookEx(hMouseHook);
+        if (hookTid != 0) PostThreadMessageW(hookTid, 0x0012, IntPtr.Zero, IntPtr.Zero); // WM_QUIT na linha dos ganchos
         GC.KeepAlive(mutex);
     }
 }
